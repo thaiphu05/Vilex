@@ -1,0 +1,54 @@
+# Vilex Stage 5 (TTS rendering) — install into a SEPARATE Python 3.11
+# environment from requirements.txt (Stages 1-4).
+#
+# The vendored Chatterbox package pins transformers==4.46.3 and
+# requires-python >=3.11,<3.12. Stage 3 needs transformers>=4.53. The two
+# cannot coexist, so they get one environment each.
+#
+# Two rendering paths, both in this file:
+#   * English legacy path — k2-fsa/OmniVoice NOT used; uses vendored Chatterbox.
+#   * Vietnamese path (default) — k2-fsa/OmniVoice; does NOT use Chatterbox and
+#     does NOT need NeMo text normalization.
+# Block A ships everything both paths need; Block B adds the Chatterbox-only
+# dep; Block C adds the OmniVoice-only deps. `pip install -r` installs all of
+# them, so either path works from one install.
+#
+#   python3.11 -m venv .venv-tts
+#   .venv-tts/bin/pip install -r requirements-stage5.txt
+#   .venv-tts/bin/pip install -e vilex/tts/chatterbox
+#
+# For the Vietnamese/OmniVoice default instead, prefer a conda env (see below)
+# and note torch is installed FIRST from PyTorch's cu128 index before this file.
+
+# ---------------------------------------------------------------------------
+# Block A — shared by both Stage 5 paths (direct imports of tts_render/convert_spoken.py).
+# transformers is deliberately absent here: vilex/tts/chatterbox/pyproject.toml
+# owns that pin when using the Chatterbox (English) path.
+#
+# Upper-bounded on purpose. Under NumPy 2 (NEP 50) the vendored Chatterbox's
+# norm_loudness() upcasts its float32 waveform to float64 via an np.float64
+# gain scalar, which no longer matches the s3tokenizer's float32 mel-filter
+# buffer -- Stage 5 then dies with "expected scalar type Double but found
+# Float". NumPy 1.x's value-based casting kept float32.
+# ---------------------------------------------------------------------------
+torchaudio>=2.6,<3
+nltk>=3.8
+silero-vad>=6.2.1
+whisperx>=3.3.1
+numpy<2
+
+# ---------------------------------------------------------------------------
+# Block B — English (Chatterbox) path only.
+# ---------------------------------------------------------------------------
+nemo-text-processing>=1.1.0
+
+# ---------------------------------------------------------------------------
+# Block C — Vietnamese (OmniVoice) path only. OmniVoice (k2-fsa) is installed
+# from source — it is not published to PyPI under a pinned version. Run:
+#   pip install git+https://github.com/k2-fsa/OmniVoice.git
+# Its own dependencies (transformers, soundfile, modelscope, etc.) come in with it.
+# ---------------------------------------------------------------------------
+pyloudnorm>=0.1.1
+
+# Optional: a clearer Vietnamese WER metric. Not required to run.
+# jiwer>=3.0

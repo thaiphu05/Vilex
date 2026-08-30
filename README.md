@@ -1,11 +1,11 @@
 # Vilex: Vietnamese Turn-Taking Dialogue Synthesis
 
-> **Vilex** là bản Việt hóa của **DuplexGen: Adaptive Synthesis of Human–AI Turn-Taking Dialogues** (EMNLP 2026) — pipeline 5 giai đoạn sinh hội thoại song song (duplex) với hành vi lượt nói (floor-taking / backchannel / silence) quyết định **từng từ** trong lượt nói.
+> **Vilex** is a Vietnamese adaptation of **DuplexGen: Adaptive Synthesis of Human–AI Turn-Taking Dialogues** (EMNLP 2026) — a 5-stage pipeline that synthesizes duplex (two-way) dialogues where the turn-taking behavior (floor-taking / backchannel / silence) is decided **word-by-word** within each utterance.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2607.26178-b31b1b.svg)](https://arxiv.org/abs/2607.26178)
 
-Mặc định Vilex sinh **tiếng Việt** (Gemini + OmniVoice). Tiếng Anh (Chatterbox) vẫn chạy như legacy với flag explicit.
+By default, Vilex produces **Vietnamese** (Gemini + OmniVoice). English (Chatterbox) still runs as legacy with an explicit flag.
 
 ## Pipeline overview
 
@@ -34,10 +34,11 @@ python3.11 -m venv .venv-tts
 .venv-tts/bin/pip install -e vilex/tts/chatterbox
 
 # Stage 5 Vietnamese (OmniVoice, default) — separate env
+#   (OmniVoice is installed from source, see requirements-stage5.txt Block C)
 conda create -n vilex-omnivoice python=3.11 -y
 conda activate vilex-omnivoice
 pip install torch==2.8.* --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements-stage5-vi.txt
+pip install -r requirements-stage5.txt
 # pip install git+https://github.com/k2-fsa/OmniVoice.git
 ```
 
@@ -45,10 +46,16 @@ pip install -r requirements-stage5-vi.txt
 
 **System dependencies.** `nemo-text-processing` (English/Chatterbox only) depends on `pynini` (needs `OpenFst` headers on macOS/aarch64: `sudo apt-get install -y libfst-dev` or `conda-forge`). Vietnamese/OmniVoice does NOT need NeMo/pynini.
 
-**Reproducing our exact environment.** `constraints.txt` carries the exact versions for Stages 1-4. Stage 5's versions come from the vendored `vilex/tts/chatterbox/pyproject.toml` plus the `numpy<2` bound.
+**Reproducing our exact environment.** `requirements.lock` carries the exact versions for Stages 1-4. Stage 5's versions come from the vendored `vilex/tts/chatterbox/pyproject.toml` plus the `numpy<2` bound.
 
 ```bash
-.venv/bin/pip install -r requirements.txt -c constraints.txt
+.venv/bin/pip install -r requirements.txt -c requirements.lock
+```
+
+**Development tooling** (pytest, ruff, black — the checks CI gates on). Install on top of `requirements.txt` via the `dev` extra:
+
+```bash
+.venv/bin/pip install -e '.[dev]'
 ```
 
 **LLM backend.** Every generation stage talks to a chat LLM through the OpenAI Python client, and the backend is chosen by the *model name*:
@@ -64,35 +71,42 @@ Defaults are now Vietnamese: `--target_language vi`, `--tts_backend omnivoice`, 
 ## Quickstart (Vietnamese, default)
 
 ```bash
-export GEMINI_API_KEY=...  # or GEMINI_CREDENTIALS=./gen-lang-client-*.json (Vertex AI)
+export GEMINI_API_KEY=...  # or GEMINI_CREDENTIALS=./project-name-*.json (Vertex AI)
 
 # Stage 1 — convert source dialogues to spoken Vietnamese (default vi, no flag needed)
 .venv/bin/python -m src.speechify_run \
   --dataset interviewer --save_dir results_vi/ --llm_model_name gemini-3.5-flash
 
-# Stage 3 — train the turn-taking predictor (optional)
-.venv/bin/python -m src.train_turntaking_hf \
-  --model_name_or_path Qwen/Qwen3-4B \
-  --input_root data-annotations/ \
-  --output_dir ./output/turntaking_qwen3_4b
-
-# Stages 2+4 — detect slots and generate dialogues with turn-taking (default vi)
+# Stage 2+4 — detect slots AND generate dialogues with turn-taking in one pass (default vi)
+# (Stage 2 slot detection runs inside the same synthesis entry point)
 .venv/bin/python -m src.synthesis.run \
   --dataset interviewer --split train \
-  --input_root data-dialogues/ \
+  --input_root results_vi/ \
   --save_root outputs/vi_tt \
   --llm_model_name gemini-3.5-flash --boundary_model_name gemini-3.5-flash \
   --tt_model_name gemini-3.5-flash
 
-# Add backchannel text (default vi)
+# Stage 4 (cont.) — add backchannel text (default vi)
 .venv/bin/python -m src.synthesis.run_add_bc \
   --input_root outputs/vi_tt --output_root outputs/vi_tt_bc \
   --model_name gemini-3.5-flash
 
-# Stage 5 — render to two-channel audio with OmniVoice (default vi+omnivoice)
+# Stage 5 — render to two-channel audio with OmniVoice (default vi+omnivoice),
+# picking 2 distinct voices from the voice pool per dialogue
 python tts_render/convert_spoken.py \
   --input_glob 'outputs/vi_tt_bc/**/*.json' \
-  --save_dir outputs/audios_omnivoice --num_variants 1 --device cpu
+  --save_dir outputs/audios_omnivoice \
+  --omnivoice_voice_pool "voice_clone" \
+  --num_variants 1 --device cpu
+```
+
+**Stage 3 — train the turn-taking predictor** (optional: the pipeline above falls back to the LLM predictor configured via `--tt_model_name`). Run this separately to train the HF LoRA predictor:
+
+```bash
+.venv/bin/python -m src.train_turntaking_hf \
+  --model_name_or_path Qwen/Qwen3-4B \
+  --input_root data-annotations/ \
+  --output_dir ./output/turntaking_qwen3_4b
 ```
 
 Full pipeline in one command: `./run_vi_pipeline.sh` (see file header for options).
