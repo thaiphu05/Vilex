@@ -12,8 +12,9 @@ LANG_DIRECTIVE = {
     "vi": (
         "IMPORTANT: The provided conversation may be in English. You MUST respond in "
         "Vietnamese (tiếng Việt) — translate as needed and write all spoken output in "
-        "natural Vietnamese, including casual fillers (ưm, à, ừ...). Keep [TAKE_FLOOR] "
-        "tokens unchanged."
+        "natural Vietnamese, including casual fillers (ưm, à, ừ...). "
+        "Keep tokens unchanged. "
+        "When generating a response immediately following a [TAKE_FLOOR] cutoff, strongly consider starting your turn with an interruption tag like [surprise-wa] (wow!), [surprise-yo] (ô!), [question-ei] (hả?), or [dissatisfaction-hnn] (khoan đã/hừm) if it fits the context."
     ),
 }
 

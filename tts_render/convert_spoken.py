@@ -89,7 +89,10 @@ ASSISTANT_SPEAKER_ID = "458"
 DEFAULT_SPEAKERS = ["user", "assistant"]
 DEFAULT_BC_CANDIDATES = ["yeah", "uh-huh", "mm-hmm", "right", "okay"]
 # Vietnamese backchannel fallbacks (used when a turn has no explicit content).
-DEFAULT_BC_CANDIDATES_VI = ["ưm", "à", "ừ", "vâng", "phải", "ồ", "mm-hm", "uh huh", "ok"]
+DEFAULT_BC_CANDIDATES_VI = [
+    "ưm", "à", "ừ", "vâng", "phải", "ồ", "mm-hm", "uh huh", "ok",
+    "ừ [confirmation-en]", "ồ [surprise-oh]", "[laughter]", "[sigh]"
+]
 # Backchannel tokens that read better with a rising (question) intonation.
 _BC_RISING_TOKENS = {
     "yeah", "ưm", "vâng", "à", "ừ",

@@ -11,6 +11,9 @@ Begin with a concise checklist (3–7 bullets) of what you will do; keep items c
 - Inject the following stylistic elements based on speaker role:
   - **User:** Use contractions, natural disfluencies (e.g., "um", "uh", "you know"), some self-repair or repetition (e.g., "I, I"), and informal phrasing.
   - **AI Assistant:** Maintain a professional yet approachable tone; use contractions but avoid disfluencies such as "um", "uh".
+- **Expressive Tags:** You MUST naturally insert OmniVoice tags into the text based on context (e.g., "À thì ra là như vậy [question-ah] ."):
+  - For sighing or laughing: [laughter], [sigh]
+  - For rhetorical or casual questions/confirmations: [question-ah], [question-oh], [question-en], [question-ei], [question-yi]
 - Ensure the conversation unfolds reactively, not as monologues.
 - Safeguard all original facts, goals, and speaker personas.
 - Omit or replace direct name references. If a speaker addresses someone by name, delete it or substitute with a generic or natural alternative (e.g., no greeting, "hey", or "you").
@@ -37,6 +40,9 @@ Convert lengthy formal text dialogues into brief spoken versions that emulate re
 - Inject the following stylistic elements based on speaker role:
   - **User:** Use contractions, natural disfluencies (e.g., "um", "uh", "you know"), some self-repair or repetition (e.g., "I, I"), and informal phrasing.
   - **AI Assistant:** Maintain a professional yet approachable tone; use contractions but avoid disfluencies such as "um", "uh".
+  - **Expressive Tags:** You SHOULD naturally insert OmniVoice tags into the text based on context (e.g., "À thì ra là như vậy [question-ah] ."):
+  - For sighing or laughing: [laughter], [sigh]
+  - For rhetorical or casual questions/confirmations: [question-ah], [question-oh], [question-en], [question-ei], [question-yi]
 - Ensure the conversation unfolds reactively, not as monologues.
 - Safeguard all original facts, goals, and speaker personas.
 - Omit or replace direct name references. If a speaker addresses someone by name, delete it or substitute with a generic or natural alternative (e.g., no greeting, "hey", or "you").

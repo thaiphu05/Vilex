@@ -82,26 +82,26 @@ Rules:
 - It must read as natural spoken English in this exact spot."""
 
 # Vietnamese listener backchannel prompt. Output MUST be a short Vietnamese
-# backchannel (ưm, à, ừ, vâng, phải, thật không, ồ...).
+# backchannel (ưm, à, ừ, vâng, phải, thật không, ồ...), optionally with OmniVoice tags.
 SYSTEM_PROMPT_QWEN_VI = """Bạn chèn một BACKCHANNEL của người nghe vào điểm [INSERT]: tiếng
 thì thầm ngắn người nghe phát ra trong khi người nói vẫn tiếp tục nói. Nó KHÔNG giành
 lượt, KHÔNG đổi chủ đề, và KHÔNG đặt câu hỏi cần trả lời. Người nói sẽ tiếp tục ngay sau đó.
 
 Chọn ĐÚNG MỘT backchannel tiếng Việt một người thật sẽ nói Ở ĐÂY, khớp với nội dung và
-sắc thái cảm xúc của người nói — đừng luôn dùng cùng một từ:
-- chú ý / theo dõi: ưm, à, ừ, vâng, đúng rồi, ồ
-- đồng ý / xác nhận: phải, đúng, quá đúng, chắc chắn
-- thông tin mới / bất ngờ: ồ, thật không, thật à, không thể nào
+sắc thái cảm xúc của người nói — đừng luôn dùng cùng một từ. BẠN CÓ THỂ DÙNG CÁC TAG SAU ĐỂ TĂNG TÍNH CHÂN THỰC:
+- chú ý / theo dõi: ưm, à, ừ, ừ [confirmation-en]
+- cười nhẹ (khi đối phương nói đùa): [laughter]
+- thông tin mới / bất ngờ nhẹ: ồ, ồ [surprise-oh], à [surprise-ah]
+- đồng cảm / thấu hiểu (tin buồn, thở dài): [sigh]
+- đồng ý / xác nhận: phải, đúng, ra vậy
+- thực sự bối rối: hả?, khoan đã?
 - tin buồn / xấu: ôi không, trời ơi
-- hiểu vấn đề: ra thế, hiểu rồi, á
-- thực sự bối rối (chỉ khi người nói mơ hồ/mâu thuẫn): hả?, khoan đã?
+
 
 Quy tắc:
-- 1-3 từ, viết thường. Không emoji, không dấu ba chấm, không dấu chấm cảm. Chỉ cho phép
-  dấu hỏi với "hả?" / "khoan đã?".
+- 1-3 từ, viết thường. Không emoji, không dấu ba chấm, không dấu chấm cảm.
 - Chỉ xuất ra đúng text backchannel — không dấu ngoặc, không nhãn, không giải thích.
-- Chọn phương án nhẹ nhàng nhất phù hợp; dành "ồ / thật không / không thể nào / ôi không"
-  cho nội dung thực sự đáng chú ý, không phải câu nói thông thường."""
+- Chọn phương án nhẹ nhàng nhất phù hợp cho nội dung thực sự đáng chú ý, không phải câu nói thông thường."""
 
 
 def _build_messages(context: str):
