@@ -748,6 +748,7 @@ def generate_audio(model, tts_text, audio_prompt_path, ref_audio=None, ref_text=
         if ref_audio is not None:
             audio = model.generate(
                 text=tts_text,
+                speed=1.3,
                 ref_audio=ref_audio,
                 ref_text=ref_text,
                 language=TTS_LANGUAGE,
@@ -756,6 +757,7 @@ def generate_audio(model, tts_text, audio_prompt_path, ref_audio=None, ref_text=
         else:
             audio = model.generate(
                 text=tts_text,
+                speed=1.3,
                 instruct=audio_prompt_path,
                 language=TTS_LANGUAGE,
                 normalize_text=True,
@@ -768,7 +770,7 @@ def generate_audio(model, tts_text, audio_prompt_path, ref_audio=None, ref_text=
             logging.warning("OmniVoice returned empty audio for %r; using 0.2s silence.", tts_text)
             wav = torch.zeros(1, int(0.2 * TARGET_SR))
         return wav
-    wav = model.generate(tts_text, audio_prompt_path=audio_prompt_path)
+    wav = model.generate(tts_text, audio_prompt_path=audio_prompt_path, speed=1.3)
     if wav.dim() == 1:
         wav = wav.unsqueeze(0)
     if wav.numel() == 0:
