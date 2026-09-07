@@ -44,6 +44,7 @@ credentials.json
 *.m4a
 *.opus
 *.ogg
+work*.json
 
 # ...but DO ship the intentional TTS prompt/reference wavs.
 !tts_render/prompt_wavs/

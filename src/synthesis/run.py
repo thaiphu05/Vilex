@@ -193,6 +193,12 @@ def main():
         choices=["en", "vi"],
         help="Output language. 'vi' makes the LLM generate Vietnamese turns (prompts stay English). (default: %(default)s) Use --target_language en for English.",
     )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=1,
+        help="Parallel dialogue workers (ThreadPoolExecutor). 1=sequential (default), 8 recommended with GEMINI_MIN_INTERVAL=0.5 (120/min). Shares LLM clients via global pacing lock.",
+    )
 
     args = parser.parse_args()
 
@@ -230,61 +236,86 @@ def main():
 
     n_inputs_found = 0
     for dataset in datasets:
-        in_paths = iter_input_jsons(input_root, dataset, args.split)
-        if not in_paths:
+        all_paths = iter_input_jsons(input_root, dataset, args.split)
+        if not all_paths:
             print(f"[WARN] No input JSONs for {dataset}/{args.split}, skipping.")
             continue
-        n_inputs_found += len(in_paths)
+        n_inputs_found += len(all_paths)
 
-        in_paths = in_paths[: args.max_dialogues]  # limit for quick testing
-
+        # Filter pending before capping so reruns don't waste quota on already-done files
         out_dir = save_root / f"text_dialogue_{dataset}" / args.split
         out_dir.mkdir(parents=True, exist_ok=True)
+        pending = [p for p in all_paths if not (out_dir / p.name).exists()]
+        in_paths = pending[: args.max_dialogues] if args.max_dialogues else pending
+        if not in_paths:
+            print(f"[{dataset}/{args.split}] all {len(all_paths)} done, skipping.")
+            continue
 
-        for in_path in tqdm(in_paths, desc=f"Applying TT predictor [{dataset}/{args.split}]"):
+        def _process_one(in_path: Path):
             out_path = out_dir / in_path.name
+            # atomic skip: second claim loses
             if out_path.exists():
-                continue
+                return ("skip", in_path.name, None)
+            try:
+                ex = read_json(in_path)
+                source_turns = ensure_source_turns(ex)
+                scenario_desc = extract_scenario(ex)
+                utterances = speechify_turn_by_turn(
+                    llm_model_name=args.llm_model_name,
+                    client=client,
+                    client_tt=client_tt,
+                    client_boundary=client_boundary,
+                    source_turns=source_turns,
+                    scenario_description=scenario_desc,
+                    max_turns=args.max_turns,
+                    temperature_user=args.temperature_user,
+                    temperature_ai=args.temperature_ai,
+                    dataset=dataset,
+                    tt_model_name=args.tt_model_name,
+                    boundary_model_name=args.boundary_model_name,
+                    target_language=args.target_language,
+                    hf_model=hf_model,
+                    hf_tokenizer=hf_tokenizer,
+                    hf_max_seq_length=args.hf_max_seq_length,
+                    hf_use_last_n_history=args.hf_use_last_n_history,
+                    hf_batch_size=args.hf_batch_size,
+                )
+                for u in utterances:
+                    u["content"] = _normalize_ws(u["content"])
+                result = dict(ex)
+                result["history"] = utterances
+                result["meta"] = dict(ex.get("meta", {}))
+                result["meta"]["turn_taking_applied"] = True
+                result["meta"]["tt_model"] = args.hf_model_name_or_path or args.tt_model_name
+                result["meta"]["tt_mode"] = "hf_classification" if hf_model else "llm_verbalized"
+                result["meta"]["boundary_model"] = args.boundary_model_name
+                result["meta"]["input_path"] = str(in_path)
+                write_json(out_path, result)
+                return ("ok", in_path.name, None)
+            except Exception as e:
+                return ("fail", in_path.name, str(e))
 
-            ex = read_json(in_path)
+        if args.max_workers and args.max_workers > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            source_turns = ensure_source_turns(ex)
-            scenario_desc = extract_scenario(ex)
-
-            utterances = speechify_turn_by_turn(
-                llm_model_name=args.llm_model_name,
-                client=client,
-                client_tt=client_tt,
-                client_boundary=client_boundary,
-                source_turns=source_turns,
-                scenario_description=scenario_desc,
-                max_turns=args.max_turns,
-                temperature_user=args.temperature_user,
-                temperature_ai=args.temperature_ai,
-                dataset=dataset,
-                tt_model_name=args.tt_model_name,
-                boundary_model_name=args.boundary_model_name,
-                target_language=args.target_language,
-                hf_model=hf_model,
-                hf_tokenizer=hf_tokenizer,
-                hf_max_seq_length=args.hf_max_seq_length,
-                hf_use_last_n_history=args.hf_use_last_n_history,
-                hf_batch_size=args.hf_batch_size,
-            )
-
-            for u in utterances:
-                u["content"] = _normalize_ws(u["content"])
-
-            result = dict(ex)
-            result["history"] = utterances
-            result["meta"] = dict(ex.get("meta", {}))
-            result["meta"]["turn_taking_applied"] = True
-            result["meta"]["tt_model"] = args.hf_model_name_or_path or args.tt_model_name
-            result["meta"]["tt_mode"] = "hf_classification" if hf_model else "llm_verbalized"
-            result["meta"]["boundary_model"] = args.boundary_model_name
-            result["meta"]["input_path"] = str(in_path)
-
-            write_json(out_path, result)
+            n_ok = n_fail = n_skip = 0
+            with ThreadPoolExecutor(max_workers=args.max_workers) as pool:
+                futures = {pool.submit(_process_one, p): p for p in in_paths}
+                for fut in tqdm(as_completed(futures), total=len(in_paths), desc=f"Applying TT [{dataset}/{args.split}] x{args.max_workers}"):
+                    status, name, err = fut.result()
+                    if status == "ok":
+                        n_ok += 1
+                    elif status == "skip":
+                        n_skip += 1
+                    else:
+                        n_fail += 1
+                        print(f"[FAIL] {name}: {err}")
+            print(f"[{dataset}/{args.split}] workers={args.max_workers} ok={n_ok} skip={n_skip} fail={n_fail}")
+        else:
+            for in_path in tqdm(in_paths, desc=f"Applying TT predictor [{dataset}/{args.split}]"):
+                status, name, err = _process_one(in_path)
+                if status == "fail":
+                    print(f"[FAIL] {name}: {err}")
 
     # Every dataset warned and was skipped: the root is wrong (the published HF
     # layout rather than text_dialogue_<dataset>/<split>/, say). Exiting 0 here

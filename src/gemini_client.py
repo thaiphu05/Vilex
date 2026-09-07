@@ -23,6 +23,7 @@ Implemented surface (only what the pipeline uses):
   branch because its ``base_url`` does not contain ``openai.com``).
 """
 
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -119,7 +120,7 @@ import threading
 
 _rate_lock = threading.Lock()
 _last_call_ts = 0.0
-_MIN_INTERVAL = 13.0  # keep comfortably under 5 requests/minute
+_MIN_INTERVAL = float(os.getenv("GEMINI_MIN_INTERVAL", "13.0"))  # 0.5 => 120/min (paid), 13.0 => free-tier
 
 
 def _rate_limit() -> None:
