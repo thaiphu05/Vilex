@@ -13,9 +13,9 @@ MAX_DIALOGUES=2          # Stage 4 & Stage 5: số dialogue xử lý. Trống = 
 MAX_TURNS=10             # Stage 4: số lượt tối đa / dialogue (mặc định 20 nếu trống).
 NUM_VARIANTS=3            # Stage 5: số bản audio / dialogue.
 
-#   export GEMINI_CREDENTIALS="$REPO/NAME.json"   # Vertex AI
+  export GEMINI_CREDENTIALS="compact-record-506103-d5-03a04dceeac7.json"   # Vertex AI
 #   # hoặc:
-#   export GEMINI_API_KEY="PASTE_YOUR_KEY"                                            # Generative Language API
+  export GEMINI_MIN_INTERVAL=0.5                                          
 if [[ -z "${GEMINI_CREDENTIALS:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
   echo "ERROR: chưa set GEMINI_CREDENTIALS hoặc GEMINI_API_KEY. Vui lòng export trước khi chạy." >&2
   exit 1
@@ -26,13 +26,22 @@ export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
 "$PY" -m src.speechify_run -d interviewer --split train --save_dir results_vi \
   --llm_model_name gemini-3.6-flash --max_train_samples 1
 
+# Stage 1.5 — Cross-turn slot dictation (rule-based, 0 API calls)
+"$PY" -m src.cross_turn_slots --input_root results_vi --output_root results_vi_xt \
+  --split train --dataset interviewer --perror 0.20 --seed 42 \
+  --target_language vi --roles both
+
+# Stage 1.75 — Disfluency injection (rule-based, 0 API calls)
+"$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis \
+  --split train --dataset interviewer --seed 42 --target_language vi
+
 # Stage 4 — Synthesis (turn-taking + boundary, default vi)
 "$PY" -m src.synthesis.run -d interviewer -s train \
-  --input_root results_vi --save_root outputs/vi_tt \
+  --input_root results_vi_dis --save_root outputs/vi_tt \
   --llm_model_name gemini-3.6-flash \
   --boundary_model_name gemini-3.6-flash \
   --tt_model_name gemini-3.6-flash \
-  --max_dialogues 1 --max_turns 10
+  --max_dialogues 1 --max_turns 20
 
 # Stage 4 (tiếp) — Backchannel (default vi)
 "$PY" -m src.synthesis.run_add_bc --dataset interviewer --split train \

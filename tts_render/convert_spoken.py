@@ -329,14 +329,16 @@ def _cut_at_take_floor_plus_one_word(text: str) -> str:
     left = left.strip()
     right = right.strip()
 
-    m = _word_re.search(right)
-    if not m:
+    words = list(_VI_WORD_RE.finditer(right))
+    if not words:
         return left
 
-    first_word = m.group(0)
+    left_word_count = len(_VI_WORD_RE.findall(left))
+    keep = 3 if left_word_count < 5 else 1
+    kept = " ".join(m.group(0) for m in words[:keep])
     if left:
-        return f"{left} {first_word}".strip()
-    return first_word.strip()
+        return f"{left} {kept}".strip()
+    return kept.strip()
 
 
 # --- LLM-artifact sanitizer -------------------------------------------------

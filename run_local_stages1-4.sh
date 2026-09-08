@@ -6,10 +6,10 @@ cd "$REPO"
 PY="${PY:-python}"
 MODEL="${MODEL:-gemini-3.6-flash}"
 SPLIT="train"
-MAX_TRAIN="${MAX_TRAIN:-10}"
-MAX_TEST="${MAX_TEST:-10}"
-MAX_DIALOGUES="${MAX_DIALOGUES:-20}"
-MAX_WORKERS="${MAX_WORKERS:-8}"
+MAX_TRAIN="${MAX_TRAIN:-30}"
+MAX_TEST="${MAX_TEST:-30}"
+MAX_DIALOGUES="${MAX_DIALOGUES:-30}"
+MAX_WORKERS="${MAX_WORKERS:-16}"
 export GEMINI_MIN_INTERVAL="${GEMINI_MIN_INTERVAL:-0.5}"
 DATA_ROOT="${DATA_ROOT:-}"
 INPUT_PATH="${INPUT_PATH:-}"
@@ -19,7 +19,7 @@ mkdir -p "$LOGDIR"
 if [ $# -gt 0 ]; then
   DATASETS=("$@")
 else
-  DATASETS=(${DATASETS:-interviewer soda multiwoz negotiator socraticlm persuader})
+  DATASETS=(${DATASETS:-interviewer multiwoz negotiator socraticlm persuader})
 fi
 
 if [[ -z "${GEMINI_CREDENTIALS:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
@@ -51,7 +51,23 @@ for ds in "${DATASETS[@]}"; do
     continue
   fi
 
-  if "$PY" -m src.synthesis.run -d "$ds" -s "$SPLIT" --input_root results_vi --save_root outputs/vi_tt --llm_model_name "$MODEL" --boundary_model_name "$MODEL" --tt_model_name "$MODEL" --max_dialogues "$MAX_DIALOGUES" --max_workers "$MAX_WORKERS" >>"$log" 2>&1; then
+  # Stage 1.5: Cross-turn slots (rule-based, 0 API calls)
+  if "$PY" -m src.cross_turn_slots --input_root results_vi --output_root results_vi_xt --split "$SPLIT" --dataset "$ds" --perror 0.20 --seed 42 --target_language vi --roles both >>"$log" 2>&1; then
+    echo "[$ds] cross_turn_slots OK" | tee -a "$STATUS"
+  else
+    echo "[$ds] cross_turn_slots FAIL (see $log)" | tee -a "$STATUS"
+    continue
+  fi
+
+  # Stage 1.75: Disfluency injection (rule-based, 0 API calls)
+  if "$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis --split "$SPLIT" --dataset "$ds" --seed 42 --target_language vi >>"$log" 2>&1; then
+    echo "[$ds] disfluency OK" | tee -a "$STATUS"
+  else
+    echo "[$ds] disfluency FAIL (see $log)" | tee -a "$STATUS"
+    continue
+  fi
+
+  if "$PY" -m src.synthesis.run -d "$ds" -s "$SPLIT" --input_root results_vi_dis --save_root outputs/vi_tt --llm_model_name "$MODEL" --boundary_model_name "$MODEL" --tt_model_name "$MODEL" --max_dialogues "$MAX_DIALOGUES" --max_workers "$MAX_WORKERS" >>"$log" 2>&1; then
     echo "[$ds] synthesis OK" | tee -a "$STATUS"
   else
     echo "[$ds] synthesis FAIL (see $log)" | tee -a "$STATUS"
@@ -71,4 +87,4 @@ done
 echo "--- summary ---"
 cat "$STATUS"
 find results_vi outputs/vi_tt_bc -type f 2>/dev/null | head -20
-echo "counts: $(find outputs/vi_tt_bc -type f 2>/dev/null | wc -l | tr -d ' ') files in outputs/vi_tt_bc (expect 180 when all 6×30 done)"
+echo "counts: $(find outputs/vi_tt_bc -type f 2>/dev/null | wc -l | tr -d ' ') files in outputs/vi_tt_bc (expect 150 when all 5×30 done)"
