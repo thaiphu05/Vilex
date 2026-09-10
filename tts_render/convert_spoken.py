@@ -72,7 +72,17 @@ _NORMALIZER = None
 TARGET_SR = 24000  # overridden from model.sr after loading
 PROMPT_SR = 16000
 
-TURN_GAP_SEC = 0.16  # fixed silence gap between speaker turns (seconds)
+# --- Timing distributions (Stage 5 audio assembly) ---
+# Empirical Exponential GAP scale (fitted to P50=0.49s, P75=0.98s)
+GAP_EXP_SCALE = 0.7067
+GAP_MIN_SEC = 0.003
+GAP_MAX_SEC = 2.50
+
+# Empirical Exponential PAUSE scale (fitted to P50=0.47s, max=4.0s)
+PAUSE_EXP_SCALE = 0.6780
+PAUSE_MIN_SEC = 0.001
+PAUSE_MAX_SEC = 4.00
+
 USER_INTERRUPT_OVERLAP_SEC = 0.64  # max overlap when user interrupts assistant (seconds)
 USER_INTERRUPT_PROB = 0.5  # probability that user interrupts assistant [reduced from 0.6]
 MAX_PROMPT_SECS = 10  # max seconds of audio to keep in cumulative voice prompt
@@ -106,6 +116,20 @@ _word_re = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?")
 def _noise_floor_segment(length, sr, amp=NOISE_FLOOR_AMP):
     """Generate `length` samples of faint white-noise room tone (per-call random) for gap fill."""
     return torch.randn(2, length) * amp
+
+
+def _sample_gap(turn_dur_sec: float = 3.0) -> float:
+    """Sample an inter-speaker gap duration (seconds) from Exponential distribution, scaled by turn length."""
+    raw_gap = np.random.exponential(scale=GAP_EXP_SCALE)
+    scale_factor = float(np.clip((turn_dur_sec / 3.0) ** 0.25, 0.7, 1.5))
+    gap = raw_gap * scale_factor
+    return float(np.clip(gap, GAP_MIN_SEC, GAP_MAX_SEC))
+
+
+def _sample_pause() -> float:
+    """Sample an intra-speaker pause duration (seconds) from Exponential distribution."""
+    raw_pause = np.random.exponential(scale=PAUSE_EXP_SCALE)
+    return float(np.clip(raw_pause, PAUSE_MIN_SEC, PAUSE_MAX_SEC))
 
 
 def _loudness_normalize(waveform, sr, target=TARGET_LUFS):
@@ -637,14 +661,20 @@ def place_backchannel(listener_speech, tts_speech, bc_speech, start):
 
 def aggregate_speech(total_speech, total_speech_meta):
     merged_speech = total_speech[0].clone()
-    gap_samples = int(TURN_GAP_SEC * TARGET_SR)
     overlap_samples_max = int(USER_INTERRUPT_OVERLAP_SEC * TARGET_SR)
+
+    # First chunk: no transition.
+    total_speech_meta[0]["timing"] = "none"
+    total_speech_meta[0]["duration_sec"] = 0.0
 
     for i, (speech, meta) in enumerate(zip(total_speech, total_speech_meta)):
         if i == 0:
             continue
         prev_meta = total_speech_meta[i - 1]
 
+        curr_turn_dur = speech.size(1) / TARGET_SR
+
+        # --- Branch 1: explicit [TAKE_FLOOR] interrupt ---
         if meta["speaker"] != prev_meta["speaker"] and meta["uttr_type"] == "interrupt":
             overlap_len = np.random.normal(loc=0.45, scale=0.05)
             overlap_len = int(
@@ -660,7 +690,10 @@ def aggregate_speech(total_speech, total_speech_meta):
                 ),
                 dim=1,
             )
+            meta["timing"] = "overlap"
+            meta["duration_sec"] = round(overlap_len / TARGET_SR, 4)
 
+        # --- Branch 2: speaker change, no explicit interrupt ---
         elif meta["speaker"] != prev_meta["speaker"]:
             prev_is_assistant = prev_meta["speaker"] == 1
             curr_is_user = meta["speaker"] == 0
@@ -671,10 +704,14 @@ def aggregate_speech(total_speech, total_speech_meta):
                 has_leading_bc = ai_lead.abs().max().item() > 1e-6
 
                 if has_leading_bc:
+                    gap_sec = _sample_gap(curr_turn_dur)
+                    gap_samples = int(gap_sec * TARGET_SR)
                     padded_speech = torch.cat(
                         (_noise_floor_segment(gap_samples, TARGET_SR), speech), dim=1
                     )
                     merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
+                    meta["timing"] = "gap"
+                    meta["duration_sec"] = round(gap_sec, 4)
                 else:
                     overlap_samples = min(
                         overlap_samples_max, merged_speech.size(1), speech.size(1)
@@ -687,14 +724,33 @@ def aggregate_speech(total_speech, total_speech_meta):
                         ),
                         dim=1,
                     )
+                    meta["timing"] = "overlap"
+                    meta["duration_sec"] = round(overlap_samples / TARGET_SR, 4)
             else:
+                gap_sec = _sample_gap(curr_turn_dur)
+                gap_samples = int(gap_sec * TARGET_SR)
                 padded_speech = torch.cat(
                     (_noise_floor_segment(gap_samples, TARGET_SR), speech), dim=1
                 )
                 merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
+                meta["timing"] = "gap"
+                meta["duration_sec"] = round(gap_sec, 4)
 
+        # --- Branch 3: same speaker ---
         else:
-            merged_speech = torch.cat((merged_speech, speech), dim=1)
+            if meta.get("boundary") == "turn":
+                pause_sec = _sample_pause()
+                pause_samples = int(pause_sec * TARGET_SR)
+                padded_speech = torch.cat(
+                    (_noise_floor_segment(pause_samples, TARGET_SR), speech), dim=1
+                )
+                merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
+                meta["timing"] = "pause"
+                meta["duration_sec"] = round(pause_sec, 4)
+            else:
+                merged_speech = torch.cat((merged_speech, speech), dim=1)
+                meta["timing"] = "none"
+                meta["duration_sec"] = 0.0
 
     merged_speech = _loudness_normalize(merged_speech, TARGET_SR)
     return merged_speech
@@ -1164,13 +1220,19 @@ def main_process(
                             "uttr_type": "interrupt",
                             "speaker": curr_idx,
                             "tts_text": tts_text.strip(),
+                            "boundary": "turn",
                         }
                     )
                     interrupt_flag[curr_idx] = False
                 else:
                     total_speech.append(speech)
                     total_speech_meta.append(
-                        {"uttr_type": None, "speaker": curr_idx, "tts_text": tts_text.strip()}
+                        {
+                            "uttr_type": None,
+                            "speaker": curr_idx,
+                            "tts_text": tts_text.strip(),
+                            "boundary": "turn" if is_last_text else "sentence",
+                        }
                     )
 
                 if uttered_bc_list:
@@ -1500,7 +1562,26 @@ def main(args):
             total_speech_meta["user_prompt_wav"] = str(libri_path)
             total_speech_meta["user_prompt_speaker_id"] = libri_spk
             total_speech_meta["variant_idx"] = variant_idx
-            total_speech_meta["turn_gap_sec"] = TURN_GAP_SEC
+            total_speech_meta["timing_config"] = {
+                "gap": {
+                    "distribution": "exponential",
+                    "scale_sec": GAP_EXP_SCALE,
+                    "min_sec": GAP_MIN_SEC,
+                    "max_sec": GAP_MAX_SEC,
+                    "percentiles_fitted": {"min": 0.003, "P25": 0.203, "P50": 0.49, "P75": 0.98},
+                },
+                "pause": {
+                    "distribution": "exponential",
+                    "scale_sec": PAUSE_EXP_SCALE,
+                    "min_sec": PAUSE_MIN_SEC,
+                    "max_sec": PAUSE_MAX_SEC,
+                    "percentiles_fitted": {
+                        "min": 0.001, "P1": 0.007, "P25": 0.195, "P50": 0.47, "P75": 0.94, "max": 4.0
+                    },
+                },
+                "overlap_max_sec": USER_INTERRUPT_OVERLAP_SEC,
+                "user_interrupt_prob": USER_INTERRUPT_PROB,
+            }
 
             with open(save_json_fpath, "w") as jf:
                 json.dump(total_speech_meta, jf, indent=4)
