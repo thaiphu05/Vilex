@@ -2,6 +2,9 @@
 
 Renders the Stage 4 result to two-channel audio with Chatterbox.
 
+> For the model inventory, constants, and per-turn pipeline, see
+> [stage5-internals](stage5-internals.md).
+
 ```bash
 .venv-tts/bin/python tts_render/convert_spoken.py \
   --prompt_dir tts_render/prompt_wavs \

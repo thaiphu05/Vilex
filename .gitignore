@@ -16,9 +16,27 @@ venv/
 outputs/
 output/
 results/
+results_vi/
+results_vi_xt/
+results_vi_dis/
 data-annotations/
 data-dialogues/
+# Downloaded raw upstream corpora (large, not shipped)
+data_raw/
+# Stage 1 --test-parse dumps
+parsed_source/
+# Stage 5 rendered audio output dir
+Sample/
 
+# Generated dialogue/data JSON (Stage 1→4 outputs)
+text_dialogue_*/**/*.json
+outputs/**/*.json
+results*/**/*.json
+data-dialogues/**/*.json
+data-annotations/**/*.json
+data_raw/**/*.json
+parsed_source/**/*
+parse_source/**/*
 # Secrets / API credentials (NEVER commit these)
 .env
 .env.*
@@ -70,3 +88,10 @@ dist/
 
 predictions/
 session-*.md
+logs/
+
+# Personal scratch / planning notes (not shipped)
+PLAN.md
+Overview.md
+Session.md
+parsed_source/parsed_source/multiwoz/test/MUL0003.json

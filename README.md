@@ -17,7 +17,7 @@ By default, Vilex produces **Vietnamese** (Gemini + OmniVoice). English (Chatter
 | 4. Turn-taking dialogue generation | Query the predictor at each slot and insert the chosen behavior, then filter role-confused outputs. | [stage4-generation](docs/stage4-generation.md) |
 | 5. TTS rendering | Render to two-channel audio — **OmniVoice** (VI, default) or **Chatterbox** (EN legacy). | [stage5-tts](docs/stage5-tts.md) |
 
-Also: [troubleshooting](docs/TROUBLESHOOTING.md) · [data licenses](docs/DATA_LICENSES.md)
+Also: [architecture](ARCHITECTURE.md) · [corpus & LLM calls](docs/CORPUS.md#5-llm-calls) · [troubleshooting](docs/TROUBLESHOOTING.md) · [data licenses](docs/DATA_LICENSES.md)
 
 ## Setup
 
@@ -75,7 +75,7 @@ export GEMINI_API_KEY=...  # or GEMINI_CREDENTIALS=./project-name-*.json (Vertex
 
 # Stage 1 — convert source dialogues to spoken Vietnamese (default vi, no flag needed)
 .venv/bin/python -m src.speechify_run \
-  --dataset interviewer --save_dir results_vi/ --llm_model_name gemini-3.5-flash
+  --dataset interviewer --save_dir results_vi/ --llm_model_name gemini-3.6-flash
 
 # Stage 2+4 — detect slots AND generate dialogues with turn-taking in one pass (default vi)
 # (Stage 2 slot detection runs inside the same synthesis entry point)
@@ -122,7 +122,7 @@ Full pipeline in one command: `./run_vi_pipeline.sh` (see file header for option
 
 ## Data
 
-HF corpus is temporarily removed. Pipeline reads local `data-annotations/` and `data-dialogues/` (`text_dialogue_<dataset>/<split>/*.json`) produced by Stage 1 or `tools/unpack_corpus.py`. See `DATA_CARD.md` for schema.
+6 upstream source datasets downloaded locally in `data_raw/`. Pipeline reads `data-annotations/` and `data-dialogues/` (`text_dialogue_<dataset>/<split>/*.json`) produced by Stage 1 or `tools/unpack_corpus.py`. See `docs/CORPUS.md` for data flow, schemas, and counts.
 
 ## License
 
