@@ -132,6 +132,11 @@ What changes under `--tts_backend omnivoice --language vi`:
   English `yeah/uh-huh` defaults.
 * **Sample rate.** OmniVoice runs at 24 kHz (`TARGET_SR = 24000`); the output
   layout is identical to the Chatterbox path.
+* **Paralinguistic tags.** By default tags (`[laughter]`, `[sigh]`,
+  `[question-*]`, `[surprise-*]`, `[confirmation-en]`, `[dissatisfaction-hnn]`)
+  are stripped before `generate()` because the checkpoint otherwise reads them as
+  literal text. Pass `--omnivoice_render_tags` to keep the 13 supported tags so
+  OmniVoice renders them as audio; unknown tags are still stripped.
 
 > [!NOTE]
 > OmniVoice's voice-design was tuned mostly on Chinese/English; Vietnamese voice

@@ -41,27 +41,60 @@ logging.getLogger("matplotlib").setLevel(logging.WARNING)
 # --- TTS backend selection (OmniVoice default for Vilex Vietnamese; Chatterbox for English legacy) ---
 TTS_BACKEND = "omnivoice"  # "chatterbox" | "omnivoice" (default omnivoice for Vilex)
 TTS_LANGUAGE = "vi"  # "vi" -> OmniVoice; "en" -> Chatterbox
+# When True (--omnivoice_render_tags) renderable paralinguistic tags are kept in
+# the TTS text so OmniVoice speaks them; unknown tags are still stripped.
+RENDER_TAGS = False
 # Per-speaker voice-design instructs for OmniVoice (index 0=user, 1=assistant).
 OMNI_INSTRUCTS = ["male, northern accent", "female, gentle"]
 
 # OmniVoice voice-clone pool, filled at runtime from --omnivoice_voice_pool.
 _VOICE_POOL = None
 
-# OmniVoice paralinguistic tags. Inserted verbatim into the TTS text so the model
-# renders laughter / sigh / question-intonation / surprise / etc. They are stripped
-# only for word-count and forced-alignment (so backchannel anchoring stays on real
-# words), never before the actual generate() call.
+# OmniVoice paralinguistic tags supported by the checkpoint. When
+# --omnivoice_render_tags is off they are stripped before generate(); when on they
+# are kept so the model renders laughter / sigh / question-intonation / surprise.
 OMNI_PARALINGUIST_TAGS = [
     "[laughter]", "[sigh]", "[confirmation-en]",
     "[question-en]", "[question-ah]", "[question-oh]", "[question-ei]", "[question-yi]",
     "[surprise-ah]", "[surprise-oh]", "[surprise-wa]", "[surprise-yo]",
     "[dissatisfaction-hnn]",
 ]
+RENDERABLE_TAGS = frozenset(OMNI_PARALINGUIST_TAGS)
 _PARALINGUIST_RE = re.compile("|".join(re.escape(t) for t in OMNI_PARALINGUIST_TAGS))
+# Any short [bracket] token (a known tag or an LLM-invented one).
+_BRACKET_TAG_RE = re.compile(r"\[[A-Za-z0-9_\-]+\]")
 
 
-def _strip_paralinguistic(text: str) -> str:
-    return _PARALINGUIST_RE.sub("", text)
+def _strip_paralinguistic(text: str, keep=None) -> str:
+    """Strip paralinguistic tags.
+
+    ``keep=None`` (default) removes every known tag. Passing a set ``keep``
+    preserves those tags while removing every other tag (known or invented),
+    except the ``[PAUSE]`` token.
+    """
+    if keep is None:
+        return _PARALINGUIST_RE.sub("", text)
+
+    def _repl(m):
+        tok = m.group(0)
+        if tok in keep or tok == PAUSE_TOKEN:
+            return tok
+        return ""
+
+    return _BRACKET_TAG_RE.sub(_repl, text)
+
+
+def _replace_dashes_outside_brackets(text: str) -> str:
+    """Replace '-' with ' ' but keep hyphens inside [bracket] tags intact.
+
+    Hyphenated tags (e.g. ``[question-ah]``) must not be mangled by the legacy
+    ``text.replace("-", " ")`` applied before TTS.
+    """
+    parts = re.split(r"(\[[A-Za-z0-9_\-]+\])", text)
+    return "".join(
+        p if (p.startswith("[") and p.endswith("]")) else p.replace("-", " ")
+        for p in parts
+    )
 
 
 # NeMo normalizer is only used for the English/Chatterbox path; it is imported
@@ -968,7 +1001,12 @@ def main_process(
             else:
                 accumulated_flag[curr_idx] = False
                 tts_text = tts_texts[curr_idx]
-                tts_text = _strip_paralinguistic(tts_text)
+                if RENDER_TAGS:
+                    # Keep supported tags so OmniVoice renders them as audio;
+                    # invented/unknown tags are still stripped.
+                    tts_text = _strip_paralinguistic(tts_text, keep=RENDERABLE_TAGS)
+                else:
+                    tts_text = _strip_paralinguistic(tts_text)
                 tts_text = (
                     tts_text.replace("[interrupted]", "")
                     .replace("[MASK1]", "")
@@ -988,6 +1026,13 @@ def main_process(
                         if pi != len(parts) - 1:
                             units.append(("pause", ""))
                 generated_speech_list = []
+                if not units:
+                    # Text was only paralinguistic tags (e.g. "[sigh]") that were
+                    # stripped above -> no spoken content. Emit a short silence so
+                    # the utterance still yields a non-empty tensor.
+                    generated_speech_list.append(
+                        _noise_floor_segment(int(0.2 * TARGET_SR), TARGET_SR, channels=1)
+                    )
 
                 for st_idx, (unit_kind, sentence_) in enumerate(units):
                     if unit_kind == "pause":
@@ -998,7 +1043,7 @@ def main_process(
                                 _noise_floor_segment(pause_samples, TARGET_SR, channels=1)
                             )
                         continue
-                    sentence_clean = sentence_.replace("-", " ")
+                    sentence_clean = _replace_dashes_outside_brackets(sentence_)
 
                     # OmniVoice voice-consistency: clone from this speaker's first
                     # generated utterance instead of re-designing a new voice.
@@ -1075,7 +1120,11 @@ def main_process(
                     ):
                         max_ref = MAX_PROMPT_SECS * TARGET_SR
                         ref_wav = speech_ if speech_.size(1) <= max_ref else speech_[:, -max_ref:]
-                        speaker_ref[curr_idx] = (ref_wav.clone(), sentence_clean)
+                        # Voice-clone ref text must be plain words (no tags).
+                        speaker_ref[curr_idx] = (
+                            ref_wav.clone(),
+                            _strip_paralinguistic(sentence_clean),
+                        )
 
                 tts_speech = torch.cat(generated_speech_list, dim=1)
 
@@ -1299,11 +1348,14 @@ def main_process(
 
 
 def main(args):
-    global TARGET_SR, TTS_BACKEND, TTS_LANGUAGE, OMNI_INSTRUCTS
+    global TARGET_SR, TTS_BACKEND, TTS_LANGUAGE, OMNI_INSTRUCTS, RENDER_TAGS
 
     # Select TTS backend / language.
     TTS_BACKEND = args.tts_backend
     TTS_LANGUAGE = "Vietnamese" if args.language == "vi" else "en"
+    RENDER_TAGS = bool(getattr(args, "omnivoice_render_tags", False)) and (
+        TTS_BACKEND == "omnivoice"
+    )
     if TTS_BACKEND == "omnivoice":
         OMNI_INSTRUCTS = [args.omnivoice_user_instruct, args.omnivoice_assistant_instruct]
 
@@ -1744,6 +1796,15 @@ if __name__ == "__main__":
         type=str,
         default="female, american accent",
         help="OmniVoice voice-design instruct for the assistant speaker.",
+    )
+    parser.add_argument(
+        "--omnivoice_render_tags",
+        action="store_true",
+        default=False,
+        help="Keep supported paralinguistic tags ([laughter], [sigh], [question-*], "
+        "[surprise-*], [confirmation-en], [dissatisfaction-hnn]) so OmniVoice renders "
+        "them as audio. Off by default: tags are stripped before TTS (the checkpoint "
+        "otherwise reads them as literal text). Unknown tags are always stripped.",
     )
     parser.add_argument(
         "--omnivoice_voice_pool",

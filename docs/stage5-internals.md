@@ -31,7 +31,7 @@ Stage 4 JSON  outputs/vi_tt_bc/text_dialogue_<ds>/<split>/*.json
 
 | Component | Load / call site | Role |
 |---|---|---|
-| **OmniVoice** `k2-fsa/OmniVoice` | `from_pretrained("k2-fsa/OmniVoice")` `:1394`; `generate(...)` `:805-822` | TTS main path (VI default). `speed=1.3`, `language="Vietnamese"`, `normalize_text=True`. Turn 1 uses voice-design `instruct`; later turns voice-clone `ref_audio/ref_text`. Paralinguistic tags inserted verbatim. |
+| **OmniVoice** `k2-fsa/OmniVoice` | `from_pretrained("k2-fsa/OmniVoice")` `:1394`; `generate(...)` `:805-822` | TTS main path (VI default). `speed=1.3`, `language="Vietnamese"`, `normalize_text=True`. Turn 1 uses voice-design `instruct`; later turns voice-clone `ref_audio/ref_text`. Paralinguistic tags stripped before `generate()` by default; keep the 13 supported tags with `--omnivoice_render_tags` (unknown tags always stripped). |
 | **Chatterbox** `vilex/tts/chatterbox` | `ChatterboxTurboTTS.from_pretrained(device="cuda")` `:1406`; `generate(text, audio_prompt_path)` `:831` | TTS legacy EN path. Cumulative prompt `cumulative_*.wav` (max 10 s) grown per non-BC utterance. |
 | **Silero VAD** `silero_vad.load_silero_vad` | `get_speech_timestamps(threshold=0.3)` `:24, :993, :1043` | Silence trim per sentence + per utterance; guards against 0-length. |
 | **WhisperX** `whisperx.load_align_model` | `language_code="vi"|"en"` `:1399/:1408`; `whisperx.align(...)` `:1138` | Forced alignment of the **host utterance only**, to anchor backchannel times. Not used for transcription. |

@@ -55,4 +55,5 @@ export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
   --input_glob "outputs/vi_tt_bc/text_dialogue_interviewer/train/*.json" \
   --save_dir outputs/vi_audio \
   --omnivoice_voice_pool "voice_clone" \
+  --omnivoice_render_tags \
   --num_variants 1 --device cpu
