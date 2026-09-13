@@ -65,6 +65,8 @@ def sanitize_utterance(raw: str) -> str:
     s = re.sub(r"^```[a-zA-Z0-9_+-]*\s*", "", s).strip()
     s = re.sub(r"\s*```\s*$", "", s).strip()
 
+    # NOTE: bracket tokens such as [PAUSE] (and [TAKE_FLOOR]/[BACKCHANNEL]) are
+    # intentionally preserved — none of the prefix/quote rules below match them.
     # Peel leading prefixes in a loop to catch nested cases like
     # "10) user: \"hi there\"" → "hi there"
     for _ in range(4):

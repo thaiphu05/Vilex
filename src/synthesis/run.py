@@ -189,8 +189,8 @@ def main():
         default=0,
         help="Cap the number of generated turns. 0 (default) means auto = len(source_turns).",
     )
-    parser.add_argument("--temperature_user", type=float, default=0.7)
-    parser.add_argument("--temperature_ai", type=float, default=0.7)
+    parser.add_argument("--temperature_user", type=float, default=0.2)
+    parser.add_argument("--temperature_ai", type=float, default=0.2)
     parser.add_argument(
         "--target_language",
         type=str,

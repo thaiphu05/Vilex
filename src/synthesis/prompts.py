@@ -14,6 +14,8 @@ LANG_DIRECTIVE = {
         "Vietnamese (tiếng Việt) — translate as needed and write all spoken output in "
         "natural Vietnamese, including casual fillers (ưm, à, ừ...). "
         "Keep tokens unchanged. "
+        "Preserve every [PAUSE] token exactly as it appears, in the same position: "
+        "do not drop, translate, move, or alter it. "
         "When generating a response immediately following a [TAKE_FLOOR] cutoff, strongly consider starting your turn with an interruption tag like [surprise-wa] (wow!), [surprise-yo] (ô!), [question-ei] (hả?), or [dissatisfaction-hnn] (khoan đã/hừm) if it fits the context."
     ),
 }
@@ -84,6 +86,7 @@ The token `{TOKEN_FT}` represents a mid-sentence interruption or a rapid turn-ta
     - Role labels like `user:`, `assistant:`, `system:`, `human:`, `AI:`, `Speaker 1:`, `Speaker 2:`, `User —`, `USER:`.
     - Combined forms like `10) user:` or `user said:`.
     - Surrounding quotes (`"..."`, `'...'`, backticks), JSON, or Markdown formatting.
+* Keep any `[PAUSE]` token exactly as-is and in the same position (do not drop, translate, move, or alter it).
 * First character of your response must be the first character of the utterance itself.
 
 **Task:**
@@ -127,6 +130,7 @@ The token `{TOKEN_FT}` represents a mid-sentence interruption or a rapid turn-ta
     - Role labels like `user:`, `assistant:`, `system:`, `human:`, `AI:`, `Speaker 1:`, `Speaker 2:`, `User —`, `USER:`.
     - Combined forms like `10) user:` or `user said:`.
     - Surrounding quotes (`"..."`, `'...'`, backticks), JSON, or Markdown formatting.
+* Keep any `[PAUSE]` token exactly as-is and in the same position (do not drop, translate, move, or alter it).
 * First character of your response must be the first character of the utterance itself.
 
 **Task:**

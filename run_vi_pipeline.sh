@@ -10,7 +10,6 @@ PY="${PY:-python}"
 
 MAX_TRAIN_SAMPLES=2      # Stage 1: số dialogue nguồn xử lý (vd 2). Trống = toàn bộ.
 MAX_DIALOGUES=2          # Stage 4 & Stage 5: số dialogue xử lý. Trống = toàn bộ.
-MAX_TURNS=10             # Stage 4: số lượt tối đa / dialogue (mặc định 20 nếu trống).
 NUM_VARIANTS=3            # Stage 5: số bản audio / dialogue.
 
   export GEMINI_CREDENTIALS="compact-record-506103-d5-03a04dceeac7.json"   # Vertex AI
@@ -33,7 +32,8 @@ export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
 
 # Stage 1.75 — Disfluency injection (rule-based, 0 API calls)
 "$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis \
-  --split train --dataset interviewer --seed 42 --target_language vi
+  --split train --dataset interviewer --seed 42 --target_language vi \
+  --scale_user 0.4 --scale_assistant 0.25
 
 # Stage 4 — Synthesis (turn-taking + boundary, default vi)
 "$PY" -m src.synthesis.run -d interviewer -s train \
@@ -41,7 +41,7 @@ export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
   --llm_model_name gemini-3.6-flash \
   --boundary_model_name gemini-3.6-flash \
   --tt_model_name gemini-3.6-flash \
-  --max_dialogues 1 --max_turns 20
+  --max_dialogues 1 --max_turns 0
 
 # Stage 4 (tiếp) — Backchannel (default vi)
 "$PY" -m src.synthesis.run_add_bc --dataset interviewer --split train \

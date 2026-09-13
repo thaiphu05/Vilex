@@ -10,7 +10,7 @@ MAX_TRAIN="${MAX_TRAIN:-4}"
 MAX_TEST="${MAX_TEST:-4}"
 MAX_DIALOGUES="${MAX_DIALOGUES:-15}"
 MAX_WORKERS="${MAX_WORKERS:-16}"
-export GEMINI_MIN_INTERVAL="${GEMINI_MIN_INTERVAL:-0.5}"
+export GEMINI_MIN_INTERVAL="${GEMINI_MIN_INTERVAL:-2}"
 DATA_ROOT="${DATA_ROOT:-}"
 INPUT_PATH="${INPUT_PATH:-}"
 LOGDIR="${LOGDIR:-logs/run_$(date +%F_%H%M)}"
@@ -60,7 +60,7 @@ for ds in "${DATASETS[@]}"; do
   fi
 
   # Stage 1.75: Disfluency injection (rule-based, 0 API calls)
-  if "$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis --split "$SPLIT" --dataset "$ds" --seed 42 --target_language vi >>"$log" 2>&1; then
+  if "$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis --split "$SPLIT" --dataset "$ds" --seed 42 --target_language vi --scale_user 0.4 --scale_assistant 0.25 >>"$log" 2>&1; then
     echo "[$ds] disfluency OK" | tee -a "$STATUS"
   else
     echo "[$ds] disfluency FAIL (see $log)" | tee -a "$STATUS"
