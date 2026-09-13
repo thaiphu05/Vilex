@@ -18,6 +18,7 @@ LANG_DIRECTIVE = {
     ),
 }
 
+
 def _normalize_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
@@ -192,6 +193,38 @@ Important:
 - Output ONLY the raw continuation text — no turn indices, role labels, quotes, or markdown
 """
 
+REWRITE_WITH_HISTORY_AND_SOURCE_TEMPLATE = """Original full text conversation (for reference):
+{full_source}
+
+Transcribed conversation history:
+{history}
+
+Next source turn to rewrite:
+{src_spk}: {src_txt}
+
+Task: Rewrite ONLY the next source turn as {role}.
+Output ONLY the raw utterance text. Do NOT prepend a turn index, the role name, "user:", "assistant:", quotes, or any other label. Start with the first spoken word.
+"""
+
+REWRITE_WITH_HISTORY_AND_SOURCE_STREAMING_TEMPLATE = """Original full text conversation (for reference):
+{full_source}
+
+Transcribed conversation history:
+{history}
+
+Next source turn to rewrite:
+{src_spk}: {src_txt}
+
+Task: Continue the current turn as {role}, based on the next source turn above.
+
+Important:
+- Do NOT start a new turn or switch speakers
+- Generate ONLY the continuation that comes AFTER what has already been said
+- Maintain the same tone and context
+- Do NOT repeat or include any part of the existing content
+- Output ONLY the raw continuation text — no turn indices, role labels, quotes, or markdown
+"""
+
 REWRITE_FIRST_TURN_TEMPLATE = """Original full text conversation (for reference):
 {full_source}
 
@@ -329,24 +362,24 @@ Return **only** the marked text string, with '|' symbols marking the ends of log
 **Output:** Well,| I was thinking| maybe we can talk later| if you have time.|
 """
 
-PROMPT_VERBALIZED_SCORING = """You are asked to annotate the specific action for potential AI turn-taking when user is speaking, based on **what turn-taking behavior users would prefer at that moment**.
+PROMPT_VERBALIZED_SCORING = """You are asked to annotate the specific action for potential AI turn-taking when user is speaking, based on the dialogue context.
 
 # Task
 
 You will be given:
 1) A brief scenario description.
 2) A dialogue context (four previous turns).
-3) The user's current streaming utterance.
+3) The user's full turn with a boundary marker |<-- BOUNDARY (word N) -->| indicating the point being scored. **The user is still speaking after this boundary — this is NOT end-of-turn.**
 
-For the next token generation step, estimate a probability distribution over the AI assistant's next action at that moment:
+For the next token generation step, estimate a probability distribution over the AI assistant's next action **at the marked boundary**, based on the partial utterance up to that point:
+- **silence**: The assistant does nothing and keeps listening.
 - **floor_taking**: The assistant interrupts and takes the conversational floor.
 - **backchannel**: The assistant produces a brief continuer/acknowledgement WITHOUT taking the floor (e.g., "mm-hm", "I see", "right"), and the user is expected to keep speaking.
-- **silence**: The assistant does nothing and keeps listening.
 
 # Output requirements
 
 - Return valid JSON only.
-- Output a probability distribution over {floor_taking, backchannel, silence}.
+- Output a probability distribution over {silence, floor_taking, backchannel}.
 - Each probability must be a number between 0 and 1.
 - The three probabilities must sum to exactly 1.
 
@@ -358,14 +391,14 @@ Scenario description:
 Dialogue context:
 <dialogue context here>
 
-User turn:
+User turn (FULL — the user continues after the boundary):
 <user turn here>
 
 # Output JSON format
 {
+    "silence": PROBABILITY_OF_SILENCE,
     "floor_taking": PROBABILITY_OF_FLOOR_TAKING,
-    "backchannel": PROBABILITY_OF_BACKCHANNEL,
-    "silence": PROBABILITY_OF_SILENCE
+    "backchannel": PROBABILITY_OF_BACKCHANNEL
 }"""
 
 # ----------------------------
@@ -384,6 +417,21 @@ def build_rewrite_user_prompt(
 
     if history_turns:
         history_block = dialog_to_block(history_turns)
+
+        if source_turn is not None:
+            src_spk, src_txt = source_turn
+            template = (
+                REWRITE_WITH_HISTORY_AND_SOURCE_STREAMING_TEMPLATE
+                if streaming
+                else REWRITE_WITH_HISTORY_AND_SOURCE_TEMPLATE
+            )
+            return template.format(
+                full_source=full_source_block,
+                history=history_block,
+                src_spk=src_spk,
+                src_txt=_normalize_ws(src_txt),
+                role=role,
+            )
 
         if streaming:
             return REWRITE_WITH_HISTORY_STREAMING_TEMPLATE.format(

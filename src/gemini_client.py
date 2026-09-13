@@ -77,7 +77,9 @@ def _messages_to_gemini(messages: List[Dict[str, str]]):
             text = str(text)
         text = text.strip()
         if role == "system":
-            system_instruction = text if system_instruction is None else system_instruction + "\n\n" + text
+            system_instruction = (
+                text if system_instruction is None else system_instruction + "\n\n" + text
+            )
             continue
         if not text:
             continue
@@ -120,7 +122,9 @@ import threading
 
 _rate_lock = threading.Lock()
 _last_call_ts = 0.0
-_MIN_INTERVAL = float(os.getenv("GEMINI_MIN_INTERVAL", "13.0"))  # 0.5 => 120/min (paid), 13.0 => free-tier
+_MIN_INTERVAL = float(
+    os.getenv("GEMINI_MIN_INTERVAL", "1.0")
+)  # 0.5 => 120/min (paid), 13.0 => free-tier
 
 
 def _rate_limit() -> None:
@@ -141,7 +145,7 @@ def _strip_json_fence(text: str) -> str:
     if s.startswith("```"):
         s = s.split("\n", 1)[1] if "\n" in s else s[3:]
         if s.endswith("```"):
-            s = s[: -3]
+            s = s[:-3]
         s = s.strip()
     return s
 
@@ -195,17 +199,11 @@ class GeminiClient:
         )
         import os
 
-        region = (
-            location
-            or os.getenv("GEMINI_LOCATION")
-            or "global"
-        )
+        region = location or os.getenv("GEMINI_LOCATION") or "global"
         project = creds.project_id
         if not project:
             raise ValueError("Service account JSON has no project_id.")
-        return genai.Client(
-            vertexai=True, project=project, location=region, credentials=creds
-        )
+        return genai.Client(vertexai=True, project=project, location=region, credentials=creds)
 
     def _create(
         self,
@@ -229,6 +227,17 @@ class GeminiClient:
             cfg_kwargs["max_output_tokens"] = max_tokens
         if response_format and response_format.get("type") == "json_object":
             cfg_kwargs["response_mime_type"] = "application/json"
+
+        # Disable Gemini thinking when requested via the OpenAI-shim extra_body.
+        if extra_body:
+            thinking_budget = extra_body.get("google_thinking_budget")
+            if thinking_budget is not None and types is not None:
+                try:
+                    cfg_kwargs["thinking_config"] = types.ThinkingConfig(
+                        thinking_budget=thinking_budget
+                    )
+                except Exception:
+                    pass
 
         config = types.GenerateContentConfig(**cfg_kwargs)
         resp = self._generate_with_backoff(model, contents, config)
@@ -264,7 +273,7 @@ class GeminiClient:
                 last_exc = e
         if last_exc is not None:
             raise last_exc
-        return _Completion(text)
+        raise RuntimeError("Gemini request failed after retries")
 
     def with_options(self, **kwargs):
         return self

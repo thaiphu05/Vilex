@@ -1,4 +1,5 @@
 """Tests for disfluency module. 0 API calls for rule-based tests."""
+
 import random
 import sys
 from pathlib import Path
@@ -6,9 +7,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
 from src.disfluency import (
-    p_disfluent, _find_slot_positions, _inject_disfluency,
-    _insert_fp, _insert_dm, _insert_edit, _insert_rep,
-    FP_INVENTORY, DM_INVENTORY, EDIT_INVENTORY,
+    p_disfluent,
+    _find_slot_positions,
+    _inject_disfluency,
+    _insert_fp,
+    _insert_dm,
+    _insert_edit,
+    _insert_rep,
+    _safe_positions,
+    FP_INVENTORY,
+    DM_INVENTORY,
+    EDIT_INVENTORY,
 )
 
 
@@ -92,10 +101,36 @@ class TestInjection:
         long_count = 0
         for _ in range(100):
             _, m1 = _inject_disfluency("a b c", rng, "vi")
-            _, m2 = _inject_disfluency("a b c d e f g h i j k l m n o p q r s t u v w x y z", rng, "vi")
+            _, m2 = _inject_disfluency(
+                "a b c d e f g h i j k l m n o p q r s t u v w x y z", rng, "vi"
+            )
             short_count += len(m1)
             long_count += len(m2)
         assert long_count > short_count
+
+
+class TestSafePositions:
+    def test_safe_positions_start_and_after_punct(self):
+        words = "Tôi sẽ dùng chiến lược này, để bán hàng.".split()
+        assert _safe_positions(words) == [0, 6, 8]
+
+    def test_safe_positions_no_punct(self):
+        words = "Tôi sẽ dùng chiến lược này để bán hàng".split()
+        assert _safe_positions(words) == [0, 8]
+
+
+class TestCompoundSafeInjection:
+    def test_no_split_vietnamese_compound(self):
+        """Disfluency insertion must not insert tokens between 'chiến' and 'lược'."""
+        for seed in range(200):
+            text = "Tôi sẽ dùng chiến lược này để bán hàng"
+            new_text, meta = _inject_disfluency(text, random.Random(seed), "vi")
+            if meta:
+                toks = new_text.split()
+                for i in range(len(toks) - 1):
+                    assert not (
+                        toks[i] == "chiến" and toks[i + 1] != "lược"
+                    ), f"compound split at seed {seed}: {new_text}"
 
 
 class TestInventory:

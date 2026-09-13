@@ -6,9 +6,9 @@ cd "$REPO"
 PY="${PY:-python}"
 MODEL="${MODEL:-gemini-3.6-flash}"
 SPLIT="train"
-MAX_TRAIN="${MAX_TRAIN:-30}"
-MAX_TEST="${MAX_TEST:-30}"
-MAX_DIALOGUES="${MAX_DIALOGUES:-30}"
+MAX_TRAIN="${MAX_TRAIN:-4}"
+MAX_TEST="${MAX_TEST:-4}"
+MAX_DIALOGUES="${MAX_DIALOGUES:-15}"
 MAX_WORKERS="${MAX_WORKERS:-16}"
 export GEMINI_MIN_INTERVAL="${GEMINI_MIN_INTERVAL:-0.5}"
 DATA_ROOT="${DATA_ROOT:-}"
@@ -67,7 +67,7 @@ for ds in "${DATASETS[@]}"; do
     continue
   fi
 
-  if "$PY" -m src.synthesis.run -d "$ds" -s "$SPLIT" --input_root results_vi_dis --save_root outputs/vi_tt --llm_model_name "$MODEL" --boundary_model_name "$MODEL" --tt_model_name "$MODEL" --max_dialogues "$MAX_DIALOGUES" --max_workers "$MAX_WORKERS" >>"$log" 2>&1; then
+  if "$PY" -m src.synthesis.run -d "$ds" -s "$SPLIT" --input_root results_vi_dis --save_root outputs/vi_tt --llm_model_name "$MODEL" --boundary_model_name "$MODEL" --tt_model_name "$MODEL" --max_dialogues "$MAX_DIALOGUES" --max_workers "$MAX_WORKERS" --max_turns 0 >>"$log" 2>&1; then
     echo "[$ds] synthesis OK" | tee -a "$STATUS"
   else
     echo "[$ds] synthesis FAIL (see $log)" | tee -a "$STATUS"

@@ -90,8 +90,10 @@ def make_client(
     if is_gemini_model(model_name):
         from src.gemini_client import GeminiClient
 
-        creds = credentials or os.getenv("GEMINI_CREDENTIALS") or os.getenv(
-            "GOOGLE_APPLICATION_CREDENTIALS"
+        creds = (
+            credentials
+            or os.getenv("GEMINI_CREDENTIALS")
+            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         )
         if creds:
             return GeminiClient(model_name, credentials_path=creds, base_url=GEMINI_BASE_URL)
@@ -108,14 +110,19 @@ def make_client(
 def no_thinking_extra_body(client: OpenAI) -> Optional[dict]:
     """`extra_body` that turns a reasoning model's thinking block off, or None.
 
-    `chat_template_kwargs` is a vLLM extension: api.openai.com *and* the Gemini
-    OpenAI-compatible endpoint reject the unknown field outright, so it must
-    only ever be sent to a self-hosted server (e.g. vLLM). We therefore return
-    None for both OpenAI and Gemini clients and the JSON body only for others.
+    * vLLM/Qwen self-hosted: uses the `chat_template_kwargs` / `enable_thinking`
+      extension.
+    * Gemini: the OpenAI-compatible endpoint rejects unknown fields, but our
+      GeminiClient wrapper reads the `google_thinking_budget` marker and maps it
+      to `types.ThinkingConfig(thinking_budget=...)` before calling the native
+      SDK. We therefore return the marker for Gemini clients.
+    * OpenAI: native reasoning controls differ; return None for now.
     """
     if getattr(client, "_is_gemini", False):
-        return None
+        return {"google_thinking_budget": 0}
     base = str(getattr(client, "base_url", "") or "")
-    if "openai.com" in base or "generativelanguage" in base:
+    if "generativelanguage" in base:
+        return {"google_thinking_budget": 0}
+    if "openai.com" in base:
         return None
     return {"chat_template_kwargs": {"enable_thinking": False}}

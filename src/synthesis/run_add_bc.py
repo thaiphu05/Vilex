@@ -1,4 +1,5 @@
 import json
+import random
 from pathlib import Path
 from typing import Dict, Any
 from tqdm import tqdm
@@ -103,6 +104,25 @@ Quy tắc:
 - Chỉ xuất ra đúng text backchannel — không dấu ngoặc, không nhãn, không giải thích.
 - Chọn phương án nhẹ nhàng nhất phù hợp cho nội dung thực sự đáng chú ý, không phải câu nói thông thường."""
 
+FALLBACK_BC_VI = ["ừ", "à", "vâng", "phải", "ồ"]
+FALLBACK_BC_EN = ["mhm", "yeah", "right", "okay", "oh"]
+
+
+def _is_valid_backchannel(text: str) -> bool:
+    """Reject empty/garbage/explanation-like LLM outputs."""
+    if not text:
+        return False
+    words = text.split()
+    if len(words) < 1 or len(words) > 3:
+        return False
+    lowered = text.lower()
+    # explanations / labels instead of the actual backchannel
+    if lowered.startswith(("backchannel", "listener", "speaker", "the ", "this ")):
+        return False
+    if "..." in text or "!" in text or "—" in text:
+        return False
+    return True
+
 
 def _build_messages(context: str):
     if TARGET_LANGUAGE == "vi":
@@ -118,17 +138,28 @@ def _build_messages(context: str):
     ]
 
 
-def generate_backchannel(context: str) -> str:
+def generate_backchannel(context: str, max_retries: int = 2) -> str:
+    fallback_pool = FALLBACK_BC_VI if TARGET_LANGUAGE == "vi" else FALLBACK_BC_EN
+    fallback = random.choice(fallback_pool)
     kwargs = dict(
-        model=MODEL_NAME, messages=_build_messages(context), temperature=0.7, max_tokens=12
+        model=MODEL_NAME, messages=_build_messages(context), temperature=0.7, max_tokens=32
     )
-    # disable thinking so the reply is just the backchannel; OpenAI and Gemini
-    # reject the vLLM-only extra_body field, so it is only emitted for vLLM.
+    # Disable thinking for reasoning models. For Gemini we emit a marker that
+    # gemini_client.py consumes as types.ThinkingConfig(thinking_budget=0).
     kwargs["extra_body"] = no_thinking_extra_body(client)
-    response = client.chat.completions.create(**kwargs)
-    out = (response.choices[0].message.content or "").strip()
-    out = out.split("</think>")[-1].strip().strip('"').strip().lower()
-    return out
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.chat.completions.create(**kwargs)
+        except Exception:
+            if attempt == max_retries:
+                return fallback
+            continue
+        out = (response.choices[0].message.content or "").strip()
+        out = out.split("</think>")[-1].strip().strip('"').strip().lower()
+        out = " ".join(out.split())
+        if _is_valid_backchannel(out):
+            return out
+    return fallback
 
 
 # ================================
@@ -141,7 +172,14 @@ def process_dialogue(dialogue: Dict[str, Any]) -> Dict[str, Any]:
         if "history" not in turn:
             continue
 
-        words = turn["content"].split()
+        # Align to the raw content before TOKEN_BC/TOKEN_FT were inserted.
+        raw_text = (
+            turn["history"][0].get("full_content", turn["content"])
+            if turn["history"]
+            else turn["content"]
+        )
+        raw_text = raw_text.replace("[BACKCHANNEL]", "").replace("[TAKE_FLOOR]", "").strip()
+        words = raw_text.split()
         for item in turn["history"]:
             if item.get("decision") != "backchannel":
                 continue

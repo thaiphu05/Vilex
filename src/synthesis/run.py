@@ -183,7 +183,12 @@ def main():
     )
 
     # --- Pipeline Config ---
-    parser.add_argument("--max_turns", type=int, default=20)
+    parser.add_argument(
+        "--max_turns",
+        type=int,
+        default=0,
+        help="Cap the number of generated turns. 0 (default) means auto = len(source_turns).",
+    )
     parser.add_argument("--temperature_user", type=float, default=0.7)
     parser.add_argument("--temperature_ai", type=float, default=0.7)
     parser.add_argument(
@@ -268,6 +273,7 @@ def main():
                     source_turns=source_turns,
                     scenario_description=scenario_desc,
                     max_turns=args.max_turns,
+                    stop_check_every=0,
                     temperature_user=args.temperature_user,
                     temperature_ai=args.temperature_ai,
                     dataset=dataset,
@@ -301,7 +307,11 @@ def main():
             n_ok = n_fail = n_skip = 0
             with ThreadPoolExecutor(max_workers=args.max_workers) as pool:
                 futures = {pool.submit(_process_one, p): p for p in in_paths}
-                for fut in tqdm(as_completed(futures), total=len(in_paths), desc=f"Applying TT [{dataset}/{args.split}] x{args.max_workers}"):
+                for fut in tqdm(
+                    as_completed(futures),
+                    total=len(in_paths),
+                    desc=f"Applying TT [{dataset}/{args.split}] x{args.max_workers}",
+                ):
                     status, name, err = fut.result()
                     if status == "ok":
                         n_ok += 1
@@ -310,7 +320,9 @@ def main():
                     else:
                         n_fail += 1
                         print(f"[FAIL] {name}: {err}")
-            print(f"[{dataset}/{args.split}] workers={args.max_workers} ok={n_ok} skip={n_skip} fail={n_fail}")
+            print(
+                f"[{dataset}/{args.split}] workers={args.max_workers} ok={n_ok} skip={n_skip} fail={n_fail}"
+            )
         else:
             for in_path in tqdm(in_paths, desc=f"Applying TT predictor [{dataset}/{args.split}]"):
                 status, name, err = _process_one(in_path)

@@ -270,18 +270,35 @@ def test_no_stage_hardcodes_the_vllm_only_extra_body():
     assert not offenders, f"literal chat_template_kwargs outside llm_client.py: {offenders}"
 
 
-def test_no_thinking_extra_body_is_none_for_openai_models():
+def test_no_thinking_extra_body_gemini_gets_thinking_budget_marker():
+    """GeminiClient consumes google_thinking_budget as types.ThinkingConfig."""
     from openai import OpenAI
 
     from src.llm_client import no_thinking_extra_body
 
     def fake_client(base_url: str) -> OpenAI:
-        c = OpenAI(api_key="x", base_url=base_url)
-        return c
+        return OpenAI(api_key="x", base_url=base_url)
 
-    for base in ("https://api.openai.com/v1", "https://generativelanguage.googleapis.com/v1beta/openai/"):
+    for base in ("https://api.openai.com/v1",):
         assert no_thinking_extra_body(fake_client(base)) is None, base
+    for base in ("https://generativelanguage.googleapis.com/v1beta/openai/",):
+        assert no_thinking_extra_body(fake_client(base)) == {"google_thinking_budget": 0}, base
     for base in ("http://localhost:8000/v1", "http://localhost:8080/v1"):
         assert no_thinking_extra_body(fake_client(base)) == {
             "chat_template_kwargs": {"enable_thinking": False}
         }, base
+
+
+def test_stage4_max_turns_default_is_zero_auto():
+    """--max_turns 0 means auto = len(source_turns); non-zero is an optional cap."""
+    src = (ROOT / "src/synthesis/run.py").read_text()
+    assert (
+        'parser.add_argument(\n        "--max_turns",\n        type=int,\n        default=0,' in src
+    )
+    assert "0 (default) means auto = len(source_turns)" in src
+
+
+def test_stage4_passes_stop_check_every_zero():
+    """Source-driven generation disables the judge_done early-stop path."""
+    src = (ROOT / "src/synthesis/run.py").read_text()
+    assert "stop_check_every=0," in src

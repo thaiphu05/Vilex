@@ -105,9 +105,24 @@ def has_prefix_contamination(s: str) -> bool:
 MARKS = ['"', "'", "`", "!", "?", ".", ","]
 HESITATIONS = {
     # English
-    "um", "uh", "umm", "uhh", "hm", "hmm", "huh",
+    "um",
+    "uh",
+    "umm",
+    "uhh",
+    "hm",
+    "hmm",
+    "huh",
     # Vietnamese
-    "ưm", "um", "à", "ừ", "ơ", "ơi", "hử", "chà", "á", "ú",
+    "ưm",
+    "um",
+    "à",
+    "ừ",
+    "ơ",
+    "ơi",
+    "hử",
+    "chà",
+    "á",
+    "ú",
 }
 # Heuristics for boundary detection
 STOP_PUNCTUATION = r"[.,?!;]+$"
@@ -118,6 +133,8 @@ CONFIG = {
     "length_guard_gap": 4,
     "sampling_seed": 42,
 }
+
+_FT_TERMINAL_PUNCT = (".", "?", "!")
 
 # --- Core Logic Functions ---
 
@@ -263,13 +280,19 @@ def predict_turn_taking_probabilities(
 
     # Cache prompt parts if possible, but here we loop
     for b_idx in boundary_indices:  # Exclude last boundary to avoid end-of-turn
-        # Partial utterance up to boundary
-        partial_turn = " ".join(words[: b_idx + 1])
+        # Full turn with a marker at the boundary point so the model knows the
+        # user is still speaking past this slot (not end-of-turn).
+        before = " ".join(words[: b_idx + 1])
+        after = " ".join(words[b_idx + 1 :])
+        if after:
+            full_turn = f"{before}  |<-- BOUNDARY (word {b_idx}) -->|  {after}"
+        else:
+            full_turn = before
 
         prompt = (
             f"Scenario description:\n{scenario_desc}\n\n"
             f"Dialogue context:\n{formatted_history}\n\n"
-            f"User turn:\n{partial_turn}"
+            f"User turn (FULL — the user continues after the boundary):\n{full_turn}"
         )
 
         # Retry logic or safe parsing
@@ -283,7 +306,7 @@ def predict_turn_taking_probabilities(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
-            extra_body=no_thinking_extra_body(client),
+                extra_body=no_thinking_extra_body(client),
             )
             raw_json = _strip_think_tags(resp.choices[0].message.content or "")
             parsed = safe_json_parse(raw_json)
@@ -437,6 +460,31 @@ def predict_turn_taking_probabilities_hf(
 # --- Token Insertion (Unchanged logic, wrapped) ---
 
 
+def _ft_candidate(paired, words, guard):
+    """Best (idx, probs) for a single floor_taking decision this turn.
+
+    Requires ``idx >= guard`` and the boundary word NOT to end with terminal
+    punctuation (``. ? !``), so sentence/clause ends inside an unfinished turn
+    never produce an interruption.
+    """
+    best_idx = None
+    best_probs = None
+    best_p = -1.0
+    for idx, probs in paired:
+        if idx < guard:
+            continue
+        if idx < len(words) and words[idx].endswith(_FT_TERMINAL_PUNCT):
+            continue
+        p = probs.get("floor_taking", 0.0)
+        if p > best_p:
+            best_p = p
+            best_idx = idx
+            best_probs = probs
+    if best_idx is None:
+        return None
+    return best_idx, best_probs
+
+
 def insert_action_tokens_from_llm_annotations(
     text: str,
     boundary_word_indices: List[int],
@@ -460,6 +508,15 @@ def insert_action_tokens_from_llm_annotations(
 
     paired = sorted(zip(boundary_word_indices, boundary_dists), key=lambda x: x[0])
 
+    # One floor_taking decision per turn: pick the best candidate (non-terminal,
+    # index >= guard) and sample once with its raw probability.
+    ft_choice = _ft_candidate(paired, words, interruption_guard_start)
+    ft_idx = None
+    if ft_choice is not None:
+        cand_idx, cand_probs = ft_choice
+        if rng.random() < cand_probs.get("floor_taking", 0.0):
+            ft_idx = cand_idx
+
     out_words: List[str] = []
     action_history: List[Dict[str, Any]] = [{"full_content": normalize_ws(text)}]
 
@@ -475,18 +532,15 @@ def insert_action_tokens_from_llm_annotations(
             decision = "silence"
             inserted = None
 
-            if i < length_guard_start or floor_taking_triggered:
+            if ft_idx is not None and i == ft_idx and not floor_taking_triggered:
+                decision = "floor_taking"
+                inserted = TOKEN_FT
+                floor_taking_triggered = True
+            elif i < length_guard_start:
                 decision = "silence"
             else:
                 sampled = _sample_action(probs, rng)
-                if sampled == "floor_taking":
-                    if i < interruption_guard_start:
-                        decision = "silence"
-                    else:
-                        decision = "floor_taking"
-                        inserted = TOKEN_FT
-                        floor_taking_triggered = True
-                elif sampled == "backchannel":
+                if sampled == "backchannel":
                     if last_bc_pos is None or (i - last_bc_pos) >= length_guard_gap:
                         decision = "backchannel"
                         inserted = TOKEN_BC
@@ -507,7 +561,13 @@ def insert_action_tokens_from_llm_annotations(
     out = normalize_ws(" ".join(out_words))
     # Post-processing cleanup
     if TOKEN_FT in out:
-        out = normalize_ws(" ".join([out.replace(TOKEN_BC, "").split(TOKEN_FT)[0], TOKEN_FT]))
+        # Keep any [BACKCHANNEL] tokens that occur before [TAKE_FLOOR].
+        # Only strip [BACKCHANNEL] from text that follows the first FT.
+        parts = out.split(TOKEN_FT)
+        before_ft = normalize_ws(parts[0])
+        after_parts = [normalize_ws(p.replace(TOKEN_BC, "")) for p in parts[1:]]
+        after_ft = (" " + TOKEN_FT + " ").join(after_parts)
+        out = normalize_ws(before_ft + " " + TOKEN_FT + ((" " + after_ft) if after_ft else ""))
     else:
         out = normalize_ws(out.replace(TOKEN_BC, ""))
 
@@ -649,21 +709,22 @@ def speechify_turn_by_turn(
 
     spoken_turns: List[Tuple[str, str]] = []
     steps = 0
-    current_role = source_turns[0][0]  # "user" or "assistant"
+    src_ptr = 0
 
     # Global RNG for token sampling
     GLOBAL_RNG = random.Random(CONFIG.get("sampling_seed", 42))
 
-    if max_turns is not None:
-        pbar = tqdm(total=max_turns, desc="Generating turns")
-    else:
-        pbar = tqdm(desc="Generating turns")
+    total_steps = max_turns if (max_turns and max_turns > 0) else len(source_turns)
+    pbar = tqdm(total=total_steps, desc="Generating turns")
 
     while True:
-        if max_turns is not None and steps >= max_turns:
+        if src_ptr >= len(source_turns):
+            break
+        if max_turns and max_turns > 0 and steps >= max_turns:
             break
 
-        source_turn = source_turns[0] if steps == 0 else None
+        source_turn = source_turns[src_ptr]
+        current_role = source_turn[0]
         temp = temperature_user if current_role == "user" else temperature_ai
 
         # 1. Generate Raw Text Content
@@ -725,7 +786,7 @@ def speechify_turn_by_turn(
                 )
 
         spoken_turns.append((current_role, final_content, history_meta))
-        current_role = "assistant" if current_role == "user" else "user"
+        src_ptr += 1
         steps += 1
 
         pbar.update(1)
