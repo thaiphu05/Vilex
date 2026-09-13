@@ -20,22 +20,26 @@ from tts_render.convert_spoken import (  # noqa: E402
     GAP_MAX_SEC,
     GAP_MIN_SEC,
     PAUSE_EXP_SCALE,
+    PAUSE_INTRA_EXP_SCALE,
+    PAUSE_INTRA_MAX_SEC,
+    PAUSE_INTRA_MIN_SEC,
     PAUSE_MAX_SEC,
     PAUSE_MIN_SEC,
+    PAUSE_TOKEN,
     USER_INTERRUPT_OVERLAP_SEC,
     USER_INTERRUPT_PROB,
+    _INTENTIONAL_BRACKET_TOKENS,
     _sample_gap,
+    _sample_intra_pause,
     _sample_pause,
     aggregate_speech,
 )
-
 
 # --- Distribution sampling ---------------------------------------------------
 
 
 class TestSampleGap:
     def test_within_bounds(self):
-        rng = np.random.default_rng(0)
         np.random.seed(0)
         for _ in range(2000):
             g = _sample_gap(3.0)
@@ -69,6 +73,27 @@ class TestSamplePause:
         samples = [_sample_pause() for _ in range(2000)]
         median = float(np.median(samples))
         assert 0.25 <= median <= 0.85, median
+
+
+class TestSampleIntraPause:
+    """Short pause used for an explicit [PAUSE] token between utterances."""
+
+    def test_bounds_config(self):
+        assert PAUSE_INTRA_MIN_SEC == 0.1
+        assert PAUSE_INTRA_MAX_SEC == 1.0
+        assert 0.0 < PAUSE_INTRA_EXP_SCALE < PAUSE_INTRA_MAX_SEC
+
+    def test_within_bounds(self):
+        np.random.seed(0)
+        for _ in range(2000):
+            p = _sample_intra_pause()
+            assert PAUSE_INTRA_MIN_SEC <= p <= PAUSE_INTRA_MAX_SEC
+
+
+class TestPauseTokenHandling:
+    def test_pause_token_in_intentional_tokens(self):
+        assert PAUSE_TOKEN == "[PAUSE]"
+        assert "[PAUSE]" in _INTENTIONAL_BRACKET_TOKENS
 
 
 # --- aggregate_speech labelling ----------------------------------------------

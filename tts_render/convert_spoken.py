@@ -83,6 +83,12 @@ PAUSE_EXP_SCALE = 0.6780
 PAUSE_MIN_SEC = 0.001
 PAUSE_MAX_SEC = 4.00
 
+# Short intra-utterance pause for an explicit [PAUSE] token (Stage 1.75 rewrites
+# the "..." the Stage-1 LLM emits into [PAUSE]); the TTS cannot read "...".
+PAUSE_INTRA_EXP_SCALE = 0.30
+PAUSE_INTRA_MIN_SEC = 0.10
+PAUSE_INTRA_MAX_SEC = 1.00
+
 USER_INTERRUPT_OVERLAP_SEC = 0.64  # max overlap when user interrupts assistant (seconds)
 USER_INTERRUPT_PROB = 0.5  # probability that user interrupts assistant [reduced from 0.6]
 MAX_PROMPT_SECS = 10  # max seconds of audio to keep in cumulative voice prompt
@@ -109,6 +115,7 @@ _BC_RISING_TOKENS = {
 }
 DEFAULT_STYLE = "A speaker with normal speaking rate"
 TAKE_FLOOR_TOKEN = "[TAKE_FLOOR]"
+PAUSE_TOKEN = "[PAUSE]"
 
 _word_re = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?")
 
@@ -130,6 +137,12 @@ def _sample_pause() -> float:
     """Sample an intra-speaker pause duration (seconds) from Exponential distribution."""
     raw_pause = np.random.exponential(scale=PAUSE_EXP_SCALE)
     return float(np.clip(raw_pause, PAUSE_MIN_SEC, PAUSE_MAX_SEC))
+
+
+def _sample_intra_pause() -> float:
+    """Short pause (seconds) for an explicit [PAUSE] token between utterances."""
+    raw_pause = np.random.exponential(scale=PAUSE_INTRA_EXP_SCALE)
+    return float(np.clip(raw_pause, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC))
 
 
 def _loudness_normalize(waveform, sr, target=TARGET_LUFS):
@@ -319,7 +332,11 @@ _VI_WORD_RE = re.compile(r"[A-Za-zÀ-ỹ]+(?:['’\-][A-Za-zÀ-ỹ]+)*|\d+(?:\.\
 
 
 def count_words_for_align(text: str, normalizer=None) -> int:
-    t = text.replace("[BACKCHANNEL]", "").replace("[TAKE_FLOOR]", "")
+    t = (
+        text.replace("[BACKCHANNEL]", "")
+        .replace("[TAKE_FLOOR]", "")
+        .replace("[PAUSE]", "")
+    )
     t = _strip_paralinguistic(
         t.replace("[interrupted]", "")
         .replace("[MASK1]", "")
@@ -370,6 +387,7 @@ def _cut_at_take_floor_plus_one_word(text: str) -> str:
 _INTENTIONAL_BRACKET_TOKENS = {
     "[BACKCHANNEL]",
     "[TAKE_FLOOR]",
+    "[PAUSE]",
     "[MASK1]",
     "[MASK2]",
     "[interrupted]",
@@ -504,6 +522,8 @@ def sanitize_text(s: str) -> str:
     if not isinstance(s, str):
         return s
     s = re.sub(r"\[TAKING_FLOOR\]", "[TAKE_FLOOR]", s, flags=re.IGNORECASE)
+    # Fallback: any leftover ellipsis the Stage-1 LLM wrote becomes a pause token.
+    s = re.sub(r"\.\.\.|…", PAUSE_TOKEN, s)
     s = re.sub(r"\[User Turn\]|\[User turn\]|\[Assistant Turn\]|\[Assistant turn\]", "", s)
     s = _peel_role_prefix(s)
     s = _strip_stage_directions(s)
@@ -951,10 +971,27 @@ def main_process(
                     .strip()
                 )
 
-                sentences = split_sentences(tts_text, TTS_LANGUAGE)
+                # [PAUSE] tokens become standalone silence "units" spliced into
+                # the generated audio (the TTS cannot read the original "...").
+                units = []
+                for sentence_ in split_sentences(tts_text, TTS_LANGUAGE):
+                    parts = sentence_.split(PAUSE_TOKEN)
+                    for pi, part in enumerate(parts):
+                        part = part.strip()
+                        if part:
+                            units.append(("text", part))
+                        if pi != len(parts) - 1:
+                            units.append(("pause", ""))
                 generated_speech_list = []
 
-                for st_idx, sentence_ in enumerate(sentences):
+                for st_idx, (unit_kind, sentence_) in enumerate(units):
+                    if unit_kind == "pause":
+                        pause_samples = int(_sample_intra_pause() * TARGET_SR)
+                        if pause_samples > 0:
+                            generated_speech_list.append(
+                                _noise_floor_segment(pause_samples, TARGET_SR)
+                            )
+                        continue
                     sentence_clean = sentence_.replace("-", " ")
 
                     # OmniVoice voice-consistency: clone from this speaker's first
@@ -985,8 +1022,8 @@ def main_process(
                             ref_audio=ref_audio, ref_text=ref_text,
                         )
 
-                    # VAD trim between sentences (not the last one)
-                    if st_idx != len(sentences) - 1:
+                    # VAD trim between sentences (not the last unit)
+                    if st_idx != len(units) - 1:
                         speech_16k = torchaudio.transforms.Resample(
                             orig_freq=TARGET_SR, new_freq=PROMPT_SR
                         )(speech_)
@@ -1124,6 +1161,7 @@ def main_process(
                         )
                     else:
                         tts_text_for_align = _strip_paralinguistic(tts_text)
+                    tts_text_for_align = tts_text_for_align.replace("[PAUSE]", " ").strip()
                     segments = [
                         {
                             "text": " " + tts_text_for_align.strip(),

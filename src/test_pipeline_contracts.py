@@ -302,3 +302,23 @@ def test_stage4_passes_stop_check_every_zero():
     """Source-driven generation disables the judge_done early-stop path."""
     src = (ROOT / "src/synthesis/run.py").read_text()
     assert "stop_check_every=0," in src
+
+
+def test_sanitize_utterance_preserves_pause_token():
+    """[PAUSE] (from Stage 1.75 "..." rewrite) must survive Stage 4 sanitation."""
+    from src.synthesis.core import sanitize_utterance
+
+    assert sanitize_utterance("[PAUSE] tôi nghĩ vậy.") == "[PAUSE] tôi nghĩ vậy."
+    assert sanitize_utterance("tôi nghĩ [PAUSE] vậy") == "tôi nghĩ [PAUSE] vậy"
+
+
+def test_stage1_prompt_controls_ellipsis():
+    """Both Stage-1 prompts must instruct controlled "..." use for long pauses."""
+    from src.speechify_prompts import (
+        SINGLE_STEP_CONVERSION_PROMPT,
+        SINGLE_STEP_CONVERSION_PROMPT_CONCISE,
+    )
+
+    for prompt in (SINGLE_STEP_CONVERSION_PROMPT, SINGLE_STEP_CONVERSION_PROMPT_CONCISE):
+        assert "Hesitation pauses" in prompt
+        assert 'Use "..."' in prompt
