@@ -120,9 +120,14 @@ PAUSE_TOKEN = "[PAUSE]"
 _word_re = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?")
 
 
-def _noise_floor_segment(length, sr, amp=NOISE_FLOOR_AMP):
-    """Generate `length` samples of faint white-noise room tone (per-call random) for gap fill."""
-    return torch.randn(2, length) * amp
+def _noise_floor_segment(length, sr, amp=NOISE_FLOOR_AMP, channels=2):
+    """Generate `length` samples of faint white-noise room tone (per-call random) for gap fill.
+
+    ``channels`` lets callers produce a mono segment (e.g. an intra-utterance
+    [PAUSE] inserted into a ``generate_audio`` list that is mono) or the default
+    stereo fill used by ``aggregate_speech`` on 2-channel speech.
+    """
+    return torch.randn(channels, length) * amp
 
 
 def _sample_gap(turn_dur_sec: float = 3.0) -> float:
@@ -988,8 +993,9 @@ def main_process(
                     if unit_kind == "pause":
                         pause_samples = int(_sample_intra_pause() * TARGET_SR)
                         if pause_samples > 0:
+                            # generate_audio returns mono [1, T]; match it here.
                             generated_speech_list.append(
-                                _noise_floor_segment(pause_samples, TARGET_SR)
+                                _noise_floor_segment(pause_samples, TARGET_SR, channels=1)
                             )
                         continue
                     sentence_clean = sentence_.replace("-", " ")
