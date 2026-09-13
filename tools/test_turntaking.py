@@ -10,12 +10,14 @@ from src.synthesis.core import _ft_candidate, insert_action_tokens_from_llm_anno
 
 
 class TestFtCandidate:
-    def test_excludes_terminal_punct(self):
+    def test_terminal_punct_is_a_candidate(self):
         words = ["tôi", "sẽ", "dùng", "chiến", "lược.", "này", "để", "bán", "hàng"]
         paired = [(4, {"floor_taking": 0.85, "backchannel": 0.1, "silence": 0.05})]
-        assert _ft_candidate(paired, words, guard=3) is None
+        res = _ft_candidate(paired, words, guard=3)
+        assert res is not None
+        assert res[0] == 4
 
-    def test_picks_max_non_terminal(self):
+    def test_picks_max_floor_taking(self):
         words = ["tôi", "sẽ", "dùng", "chiến", "lược", "này", "để"]
         paired = [
             (4, {"floor_taking": 0.3, "backchannel": 0.5, "silence": 0.2}),
@@ -53,7 +55,7 @@ class TestTurnLevelFt:
         )
         assert out.count("[TAKE_FLOOR]") == 1
 
-    def test_no_ft_at_terminal(self):
+    def test_ft_can_be_inserted_at_terminal(self):
         text = "tôi sẽ dùng chiến lược. để bán hàng"
         words = text.split()
         dot_idx = next(i for i, w in enumerate(words) if w.endswith("."))
@@ -68,4 +70,4 @@ class TestTurnLevelFt:
             interruption_guard_start=0,
             rng=random.Random(42),
         )
-        assert "[TAKE_FLOOR]" not in out
+        assert "[TAKE_FLOOR]" in out

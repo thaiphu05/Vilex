@@ -274,7 +274,9 @@ def iter_negotiator(
 
 def is_competitive_scenario(dialogue: str, client, model: str) -> bool:
     """Uses the LLM to classify if a scenario involves competition or conflict."""
-    if not dialogue or client is None:
+    if client is None:
+        return True
+    if not dialogue:
         return False
 
     formatted_dialogue = "\n".join([f"Speaker {i%2 + 1}: {msg}" for i, msg in enumerate(dialogue)])

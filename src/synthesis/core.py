@@ -465,17 +465,15 @@ def predict_turn_taking_probabilities_hf(
 def _ft_candidate(paired, words, guard):
     """Best (idx, probs) for a single floor_taking decision this turn.
 
-    Requires ``idx >= guard`` and the boundary word NOT to end with terminal
-    punctuation (``. ? !``), so sentence/clause ends inside an unfinished turn
-    never produce an interruption.
+    Requires ``idx >= guard``. Sentence-ending boundaries are eligible too: the
+    assistant may legitimately take the floor after the user completes a point
+    or asks a direct question.
     """
     best_idx = None
     best_probs = None
     best_p = -1.0
     for idx, probs in paired:
         if idx < guard:
-            continue
-        if idx < len(words) and words[idx].endswith(_FT_TERMINAL_PUNCT):
             continue
         p = probs.get("floor_taking", 0.0)
         if p > best_p:
@@ -510,8 +508,8 @@ def insert_action_tokens_from_llm_annotations(
 
     paired = sorted(zip(boundary_word_indices, boundary_dists), key=lambda x: x[0])
 
-    # One floor_taking decision per turn: pick the best candidate (non-terminal,
-    # index >= guard) and sample once with its raw probability.
+    # One floor_taking decision per turn: pick the best candidate (index >=
+    # guard) and sample once with its raw probability.
     ft_choice = _ft_candidate(paired, words, interruption_guard_start)
     ft_idx = None
     if ft_choice is not None:

@@ -373,12 +373,22 @@ PROMPT_VERBALIZED_SCORING = """You are asked to annotate the specific action for
 You will be given:
 1) A brief scenario description.
 2) A dialogue context (four previous turns).
-3) The user's full turn with a boundary marker |<-- BOUNDARY (word N) -->| indicating the point being scored. **The user is still speaking after this boundary — this is NOT end-of-turn.**
+3) The user's full turn with a boundary marker |<-- BOUNDARY (word N) -->| indicating the point being scored. The user is still speaking after this boundary; do not assume the turn ended just because a sentence ended. **However, the assistant MAY take the floor here if it has a clear reason to interject.**
 
 For the next token generation step, estimate a probability distribution over the AI assistant's next action **at the marked boundary**, based on the partial utterance up to that point:
 - **silence**: The assistant does nothing and keeps listening.
 - **floor_taking**: The assistant interrupts and takes the conversational floor.
 - **backchannel**: The assistant produces a brief continuer/acknowledgement WITHOUT taking the floor (e.g., "mm-hm", "I see", "right"), and the user is expected to keep speaking.
+
+# When the assistant may take the floor
+
+Set a high `floor_taking` only when there is a clear reason to interject, for example:
+- the user has just completed a thought or point;
+- the user asked a direct question;
+- the assistant disagrees or needs to correct/clarify the user;
+- the user is rambling or repeating and the assistant wants to redirect.
+
+Otherwise (the user is mid-thought, merely ended a sentence, or simply paused) prefer `backchannel` or `silent`.
 
 # Output requirements
 
