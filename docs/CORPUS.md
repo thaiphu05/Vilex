@@ -84,14 +84,14 @@ Pipeline reads 6 upstream text-dialogue corpora, converts them through 6 stages 
 
 ### 1.4 Pipeline Input (Stage 1 reads)
 
-Stage 1 uses `--max_variants 1` (default) for SocraticLM and Persuader — picks 1 dialogue per problem/scenario:
+Stage 1 uses `stage1_speechify.max_variants: 1` (default) for SocraticLM and Persuader — picks 1 dialogue per problem/scenario:
 
 | Corpus | Code | Dialogue count | Source |
 |---|---|---|---|
 | Interviewer | INT | 1,250 | all 3 splits |
 | MultiWOZ | PLN | 9,437 | train + test |
 | CraigslistBargain | NEG | 5,973 | train + test |
-| SocraticLM | TEA | 10,273 | `--max_variants 1` → 1/problem |
+| SocraticLM | TEA | 10,273 | `stage1_speechify.max_variants: 1` → 1/problem |
 | Persuasion | PER | 13,000 | 13,000 scenarios |
 | **5 tractable total** | | **39,933** | |
 | SODA | SOC | 1,340,550 | competitive-filtered |
@@ -404,15 +404,15 @@ All roles use `gemini-3.6-flash`. Per-dialogue cost ≈ **101 calls** (1 Stage 1
 
 Only Stages 1, 4, and 4b make API calls; Stages 1.5, 1.75, and 5 are LLM-free (§5.5).
 
-| # | Stage | Function | File:Line | Model flag | Purpose |
+| # | Stage | Function | File:Line | Model config | Purpose |
 |---|---|---|---|---|---|
-| 1 | **1** | `_generate_dialogue_structured` | `src/speechify_core.py:41` | `--llm_model_name` | Convert source dialogue → spoken-style Vietnamese |
-| 1b | **1** (SODA only) | `is_competitive_scenario` | `src/speechify_datasets.py:275` | `--llm_model_name` | Filter SODA dialogues for competitive scenarios (temp=0, max_tokens=5) |
-| 2 | **4** Writer | `generate_raw_content_turn` | `src/synthesis/core.py:517` | `--llm_model_name` | Generate spoken text for 1 dialogue turn (user or assistant) |
-| 3 | **4** Boundary | `detect_turn_boundaries` | `src/synthesis/core.py:175` | `--boundary_model_name` | Insert `\|` markers at clause boundaries in user turns (temp=0) |
-| 4 | **4** TT Predictor | `predict_turn_taking_probabilities` | `src/synthesis/core.py:244` | `--tt_model_name` | Score each boundary index: floor_taking / backchannel / silence (temp=0) |
-| 5 | **4** Done check | `judge_done` | `src/synthesis/core.py:603` | `--llm_model_name` | Coverage + stall check: compare generated vs source to decide whether to stop (temp=0) |
-| 6 | **4b** Backchannel | `generate_backchannel` | `src/synthesis/run_add_bc.py:121` | `--model_name` | Generate 1-3 word listener backchannel text for each `[INSERT]` point |
+| 1 | **1** | `_generate_dialogue_structured` | `src/speechify_core.py:41` | `llm.writer_model` | Convert source dialogue → spoken-style Vietnamese |
+| 1b | **1** (SODA only) | `is_competitive_scenario` | `src/speechify_datasets.py:275` | `llm.writer_model` | Filter SODA dialogues for competitive scenarios (temp=0, max_tokens=5) |
+| 2 | **4** Writer | `generate_raw_content_turn` | `src/synthesis/core.py:517` | `llm.writer_model` | Generate spoken text for 1 dialogue turn (user or assistant) |
+| 3 | **4** Boundary | `detect_turn_boundaries` | `src/synthesis/core.py:175` | `llm.boundary_model` | Insert `\|` markers at clause boundaries in user turns (temp=0) |
+| 4 | **4** TT Predictor | `predict_turn_taking_probabilities` | `src/synthesis/core.py:244` | `llm.tt_model` | Score each boundary index: floor_taking / backchannel / silence (temp=0) |
+| 5 | **4** Done check | `judge_done` | `src/synthesis/core.py:603` | `llm.writer_model` | Coverage + stall check: compare generated vs source to decide whether to stop (temp=0) |
+| 6 | **4b** Backchannel | `generate_backchannel` | `src/synthesis/run_add_bc.py:121` | `llm.bc_model` | Generate 1-3 word listener backchannel text for each `[INSERT]` point |
 
 ### 5.2 Per-dialogue estimates
 

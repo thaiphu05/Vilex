@@ -31,7 +31,7 @@ Stage 4 JSON  data/vi_tt_bc/text_dialogue_<ds>/<split>/*.json
 
 | Component | Load / call site | Role |
 |---|---|---|
-| **OmniVoice** `k2-fsa/OmniVoice` | `from_pretrained("k2-fsa/OmniVoice")` `:1394`; `generate(...)` `:805-822` | TTS main path (VI default). `speed=1.3`, `language="Vietnamese"`, `normalize_text=True`. Turn 1 uses voice-design `instruct`; later turns voice-clone `ref_audio/ref_text`. Paralinguistic tags stripped before `generate()` by default; keep the 13 supported tags with `--omnivoice_render_tags` (unknown tags always stripped). |
+| **OmniVoice** `k2-fsa/OmniVoice` | `from_pretrained("k2-fsa/OmniVoice")` `:1394`; `generate(...)` `:805-822` | TTS main path (VI default). `speed=1.3`, `language="Vietnamese"`, `normalize_text=True`. Turn 1 uses voice-design `instruct`; later turns voice-clone `ref_audio/ref_text`. Paralinguistic tags stripped before `generate()` by default; keep the 13 supported tags with `stage5_tts.tags.render: true` (unknown tags always stripped). |
 | **Chatterbox** `vilex/tts/chatterbox` | `ChatterboxTurboTTS.from_pretrained(device="cuda")` `:1406`; `generate(text, audio_prompt_path)` `:831` | TTS legacy EN path. Cumulative prompt `cumulative_*.wav` (max 10 s) grown per non-BC utterance. |
 | **Silero VAD** `silero_vad.load_silero_vad` | `get_speech_timestamps(threshold=0.3)` `:24, :993, :1043` | Silence trim per sentence + per utterance; guards against 0-length. |
 | **WhisperX** `whisperx.load_align_model` | `language_code="vi"|"en"` `:1399/:1408`; `whisperx.align(...)` `:1138` | Forced alignment of the **host utterance only**, to anchor backchannel times. Not used for transcription. |
@@ -109,10 +109,10 @@ State: `tts_texts[2]`, `bc_queue[2]`, `speaker_ref[2]`, `interrupt_flag[2]`,
 
 ## Voice casting (deterministic)
 
-- Per dialogue: `dialogue_seed = --seed + crc32(filename)` `:1448` (crc32, not
-  `hash()`, so a resumed run reproduces the same cast).
+- Per dialogue: `dialogue_seed = stage5_tts.seed + crc32(filename)` `:1448`
+  (crc32, not `hash()`, so a resumed run reproduces the same cast).
 - OmniVoice pool: `dialogue_rng.sample(range(len(pool)), 2)` → user + assistant
-  distinct `:1454`. No pool → all variants use the two `--omnivoice_*_instruct`
+  distinct `:1454`. No pool → all variants use the two `stage5_tts.voice.*`
   design strings.
 - Chatterbox: `sample_n_librispeech_prompts(..., num_variants, ...)` distinct
   speakers, `458` excluded.
@@ -139,6 +139,18 @@ State: `tts_texts[2]`, `bc_queue[2]`, `speaker_ref[2]`, `interrupt_flag[2]`,
 ## Timing meta written per utterance
 
 `total_speech_meta["speech_meta"][i]` carries `speaker`, `tts_text`,
-`timing ∈ {none, gap, pause, overlap}`, `duration_sec`, and optional
-`backchannels[{idx, tts_text}]`. The run-level `timing_config` records the gap /
-pause distributions, `overlap_max_sec`, and `user_interrupt_prob` `:1565-1584`.
+`timing ∈ {none, gap, pause, overlap}`, `duration_sec`, `start_sample` (offset
+of this utterance in the merged timeline, set by `aggregate_speech`), and
+optional `backchannels[{idx, tts_text}]`. The run-level `timing_config` records
+the gap / pause distributions, `overlap_max_sec`, and `user_interrupt_prob`.
+
+## Word alignment JSON (`stage5_tts.audio.save_align_json: true`)
+
+`main_process` forced-aligns each host utterance (and BCs with >1 word) via
+`whisperx.align`; the variant loop writes `alignment_user.json` and
+`alignment_assistant.json` next to `meta.json` (schema: `turns[]` with `turn`,
+`kind ∈ {utterance, backchannel}`, `text`, absolute `start_sec`/`end_sec`,
+`words[{word,start,end,score}]`). Utterance/BC word times are absolute in the
+merged track (`start_sample/24000 + local`); a BC whose alignment is empty gets
+an even split of its clip span. Enabling the flag adds both files to the resume
+skip check.

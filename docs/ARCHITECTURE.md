@@ -8,8 +8,8 @@
 Each dialogue flows through 5 stages. Turn-taking decision uses 3 labels: `floor_taking` / `backchannel` / `silence`.
 Mỗi hội thoại đi qua 5 stage. Nhãn turn-taking gồm 3 loại trên.
 
-Default path: Vietnamese (`--target_language vi`, Gemini writer, OmniVoice TTS). English (Chatterbox) is legacy, requires explicit flags.
-Đường mặc định: tiếng Việt. English là legacy, cần flag explicit.
+Default path: Vietnamese (`run.target_language: vi`, Gemini writer, OmniVoice TTS). English (Chatterbox) is legacy, requires explicit config values.
+Đường mặc định: tiếng Việt. English là legacy, cần config explicit.
 
 ## 2. Data flow
 
@@ -23,7 +23,7 @@ Default path: Vietnamese (`--target_language vi`, Gemini writer, OmniVoice TTS).
 
 | Stage | Entry point | Env | Input | Output |
 |---|---|---|---|---|
-| 1. Spoken-style conversion | `src.speechify_run` | `.venv` | 6 source corpora (HF Hub or `--data-root`) | `text_dialogue_<dataset>/{train,test}/*.json` |
+| 1. Spoken-style conversion | `src.speechify_run` | `.venv` | 6 source corpora (HF Hub or `paths.data_root`) | `text_dialogue_<dataset>/{train,test}/*.json` |
 | 2. Slot identification | `src/synthesis/core.detect_turn_boundaries` (no separate command) | `.venv` | Stage 1 JSON `history` | `boundaries` list per user turn (`word_index`) |
 | 3. Turn-taking prediction | `src.train_turntaking_hf`, `src.inference_turntaking_hf`, `src.inference_turntaking_llm` | `.venv` | `data-annotations/` | LoRA adapter or per-slot `probs` |
 | 4. Dialogue generation | `src.synthesis.run` + `src.synthesis.run_add_bc` | `.venv` | Stage 1 JSON | JSON with `history` metadata + BC `content` |
@@ -43,10 +43,10 @@ Backend chosen by model name. Backend chọn theo tên model.
 
 - `gemini-*` → Google GenAI OpenAI-compat (`GEMINI_API_KEY` or `GEMINI_CREDENTIALS` service-account JSON). Default for Vilex.
 - `gpt-*`, `o1`, `o3`, `o4` → `api.openai.com` (`OPENAI_API_KEY`).
-- `Qwen/...` → self-hosted `--base_url` (default `localhost:8000`).
+- `Qwen/...` → self-hosted `llm.base_url` (default `localhost:8000`).
 
-Stage 4 uses 3 independent roles, each own flags: writer `--llm_model_name`, boundary `--boundary_model_name`, predictor `--tt_model_name` (or `--hf_model_name_or_path` for Stage 3 LoRA).
-Stage 4 dùng 3 vai LLM độc lập, mỗi vai flag riêng.
+Stage 4 uses 3 independent roles, each its own config key: writer `llm.writer_model`, boundary `llm.boundary_model`, predictor `llm.tt_model` (or the Stage 3 LoRA adapter).
+Stage 4 dùng 3 vai LLM độc lập, mỗi vai config riêng.
 
 ## 5. Stage 1 — Spoken-style conversion (`src.speechify_run`)
 
@@ -55,15 +55,15 @@ Mục đích: viết lại hội thoại văn bản thành bản thoại nói t�
 
 Steps:
 
-1. Load source per `--dataset`: `interviewer` + `soda` auto-download from HF Hub; `multiwoz` / `negotiator` / `socraticlm` need `--data-root`; `persuader` requires `--input_path`.
+1. Load source per `run.datasets`: `interviewer` + `soda` auto-download from HF Hub; `multiwoz` / `negotiator` / `socraticlm` need `paths.data_root`; `persuader` requires `paths.input_paths.persuader` (or the global `paths.input_path`).
 2. Split by one of 3 strategies in `src/speechify_run.py`: `split_by_file` (multiwoz/negotiator), `split_by_label` (socraticlm), `split_in_halves` (interviewer/persuader/soda).
-3. Sample even spacing via `--max_train_samples` / `--max_test_samples` (default 25 each; `0` = all). Covers whole corpus, not prefix.
-4. One LLM call per dialogue (`temperature 0.7`): prompt `SINGLE_STEP_CONVERSION_PROMPT` (`src/speechify_prompts.py`), structured JSON output `{"role","content"}`.
-5. If `--target_language vi` (now default): append `LANG_DIRECTIVE[vi]`; output must be Vietnamese; keep `[TAKE_FLOOR]` unchanged.
+3. Sample even spacing via `stage1_speechify.max_train_samples` / `max_test_samples` (default 25 each; `0` = all). Covers whole corpus, not prefix.
+4. One LLM call per dialogue (`stage1_speechify.temperature 0.7`): prompt `SINGLE_STEP_CONVERSION_PROMPT` (`src/speechify_prompts.py`), structured JSON output `{"role","content"}`.
+5. If `run.target_language: vi` (now default): append `LANG_DIRECTIVE[vi]`; output must be Vietnamese; keep `[TAKE_FLOOR]` unchanged.
 6. Filter turns with role != `user`/`assistant` (drops Gemini `system` echo).
-7. Write `<save_dir>/text_dialogue_<dataset>/{train,test}/*.json`. Existing files skipped (resume).
+7. Write `<paths.results_root>/text_dialogue_<dataset>/{train,test}/*.json`. Existing files skipped (resume).
 
-Knobs: `--test-parse` (dump source, no LLM call, smoke test miễn phí), `--concise` (shorten while converting), `--max_variants` (socraticlm/persuader).
+Knobs: `run.test_parse` (dump source, no LLM call, smoke test miễn phí), `stage1_speechify.concise` (shorten while converting), `stage1_speechify.max_variants` (socraticlm/persuader).
 Chi tiết sâu: `docs/stage1-speechify.md`.
 
 ## 6. Stage 2 — Slot identification (`src/synthesis/core.detect_turn_boundaries`)
@@ -73,7 +73,7 @@ Mục đích: tìm slot trong lượt user, nơi có thể chen hành vi. Không
 
 Steps:
 
-1. LLM boundary detector (`--boundary_model_name`, temperature `0.0`) marks clauses: prompt `PROMPT_BOUNDARY_DETECTION` asks model to insert `|` after each clause, punctuation kept.
+1. LLM boundary detector (`llm.boundary_model`, temperature `0.0`) marks clauses: prompt `PROMPT_BOUNDARY_DETECTION` asks model to insert `|` after each clause, punctuation kept.
 2. Parse `|` markers → `predicted_indices` (word positions). LLM failure → empty list, heuristic only.
 3. Apply 3 heuristic rules per word `i`: (A) `i` in LLM indices, (B) word ends with `[.,?!;]`, (C) word in `HESITATIONS` set (EN `um, uh, hmm` + VI `ưm, à, ừ, ơ, hử, chà`).
 4. Drop final-turn boundary (`sorted(set(...))[:-1]`) to avoid end-of-turn slot.
@@ -110,26 +110,26 @@ Mục đích: sinh lại hội thoại từng lượt, sample hành vi tại slo
 
 Steps (`speechify_turn_by_turn` in `src/synthesis/core.py`):
 
-1. Read Stage 1 JSON from `--input_root` (`text_dialogue_<dataset>/<split>/*.json`). `--max_dialogues` (1000), `--max_turns` (20) bound cost. Existing output skipped (resume).
-2. Writer LLM (`--llm_model_name`) generates raw turn: user prompt (brief, disfluency allowed) vs assistant prompt (concise, no disfluency). VI appends `LANG_DIRECTIVE[vi]`.
+1. Read Stage 1 JSON from `paths.results_dis_root` (`text_dialogue_<dataset>/<split>/*.json`). `stage4_synthesis.max_dialogues` (15), `stage4_synthesis.max_turns` (0 = auto) bound cost. Existing output skipped (resume).
+2. Writer LLM (`llm.writer_model`) generates raw turn: user prompt (brief, disfluency allowed) vs assistant prompt (concise, no disfluency). VI appends `LANG_DIRECTIVE[vi]`.
 3. Sanitize (`sanitize_utterance`): strip `<think>` tags, code fences, `role:`/`index)` prefixes, quotes; em-dash → comma. Contamination → retry up to 3 with corrective reminder, temp `+0.1` per attempt.
-4. If turn is user: run Stage 2 slot detection → query predictor (HF adapter via `--hf_model_name_or_path` takes priority, else `--tt_model_name` chat model).
-5. Insert action tokens with guards (`length_guard_start 0`, `interruption_guard_start 3`, `length_guard_gap 4`): `floor_taking` = one decision per turn from word 3+, candidate = boundary with max `p_ft` (sentence-ending `. ? !` boundaries are eligible); sampled once with its raw probability; backchannels spaced ≥4 words apart; turn start forced `silence`.
+4. If turn is user: run Stage 2 slot detection → query predictor (HF adapter takes priority, else `llm.tt_model` chat model).
+5. Insert action tokens with guards (`stage4_synthesis.guards`: `length_guard_start 0`, `interruption_guard_start 3`, `length_guard_gap 4`): `floor_taking` = one decision per turn from word 3+, candidate = boundary with max `p_ft` (candidates also gated by `ft_terminal_punct . ? !`); sampled once with its raw probability; backchannels spaced ≥4 words apart; turn start forced `silence`.
 6. Only `[TAKE_FLOOR]` enters transcript text (truncates turn). Backchannel decisions stored in turn `history` metadata (`word_index`, `probs`, `decision`), stripped from LLM context of next turns.
-7. Every `stop_check_every` turns after minimum 2: judge LLM (`DONE_JUDGE_PROMPT`) decides early stop (coverage done vs stalled).
-8. Backchannel content (`run_add_bc`, 4th endpoint default port `8008`): fills each BC slot `content` (1-3 lowercase VI words, e.g. `ưm`, `à`, `vâng`), transcript unchanged.
+7. Every `stage4_synthesis.judge.stop_check_every` turns after `min_turns_before_stop` (2): judge LLM (`DONE_JUDGE_PROMPT`) decides early stop (coverage done vs stalled). `0` disables it.
+8. Backchannel content (`run_add_bc`, 4th endpoint `llm.bc_base_url` default port `8008`): fills each BC slot `content` (`stage4b_backchannel.valid_max_words`=3 lowercase VI words, e.g. `ưm`, `à`, `vâng`), transcript unchanged.
 
 Vilex VI uses `gemini-3.6-flash` for all 3-4 roles (no self-host). Vilex VI dùng Gemini cho mọi vai.
 Chi tiết sâu: `docs/stage4-generation.md`.
 
 ## 9. Stage 5 — TTS rendering (`tts_render/convert_spoken.py`)
 
-Purpose: render each dialogue JSON into `--num_variants` two-channel audio variants (ch0 assistant, ch1 user, 24 kHz 16-bit stereo).
+Purpose: render each dialogue JSON into `stage5_tts.num_variants` two-channel audio variants (ch0 assistant, ch1 user, 24 kHz 16-bit stereo).
 Mục đích: render JSON thành audio 2 kênh.
 
 Two backends. Hai backend:
 
-- **OmniVoice (VI, default):** voice-design `instruct` string or voice-clone pool (`--omnivoice_voice_pool voice_clone/`, wav + sidecar txt, clamp 10s). No NeMo/pynini.
+- **OmniVoice (VI, default):** voice-design `instruct` string or voice-clone pool (`paths.voice_clone_pool`, wav + sidecar txt, clamp `audio.max_prompt_secs` 10s). No NeMo/pynini.
 - **Chatterbox (EN, legacy):** fixed assistant prompt + LibriSpeech user voices. Needs NeMo + `pynini`.
 
 Steps (`main_process`):
@@ -141,16 +141,16 @@ Steps (`main_process`):
 5. Timing layer 1 (`aggregate_speech`): same speaker joins directly; turn change → `0.16s` white-noise gap (`-44dBFS`); interrupt → cross-fade overlap `0.45s`–`0.64s`.
 6. Timing layer 2 (backchannels only): `whisperx.align` (VI: `language_code="vi"`, `nguyenvulebinh/wav2vec2-base-vi-vlsp2020`) anchors BC to word-end timestamps.
 7. Mix stereo, normalize full track to LUFS `-23` (`pyloudnorm`, peak fallback).
-8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`. Variant with `dialogue.wav` + `meta.json` exists → skip (resume).
+8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`, plus `alignment_user.json`/`alignment_assistant.json` when `stage5_tts.audio.save_align_json` is on. Variant with `dialogue.wav` + `meta.json` (and align files, if enabled) exists → skip (resume).
 
-Cost knobs: `--max_dialogues`, `--num_variants` (linear cost), `--num_shards`/`--shard_id` for multi-GPU.
+Cost knobs: `stage5_tts.max_dialogues`, `stage5_tts.num_variants` (linear cost).
 Chi tiết sâu: `docs/stage5-tts.md`.
 
 ## 10. Vietnamese path (Vilex default)
 
-- Stages 1/4/add_bc: `--target_language vi` (default) + `gemini-3.6-flash` (or `-lite` when quota exhausted). Prompts stay English; output forced Vietnamese.
-- Stage 5: `--tts_backend omnivoice --language vi` (default). No prompt wavs, no NeMo.
-- Voice pool `voice_clone/`: each `<name>.wav` needs matching `<name>.txt` transcript; resampled 24k mono, cached once.
+- Stages 1/4/add_bc: `run.target_language: vi` (default) + `gemini-3.6-flash` (or `-lite` when quota exhausted). Prompts stay English; output forced Vietnamese.
+- Stage 5: `stage5_tts.backend: omnivoice` + `language: vi` (default). No prompt wavs, no NeMo.
+- Voice pool `paths.voice_clone_pool`: each `<name>.wav` needs matching `<name>.txt` transcript; resampled 24k mono, cached once.
 - Credentials: Vertex AI (`GEMINI_CREDENTIALS` + `GEMINI_LOCATION=global`) recommended; fallback `GEMINI_API_KEY` (free-tier ~20 req/day). `run_vi_pipeline.sh` errors clearly if both missing.
 
 ## 11. Data schema & scenario codes
@@ -162,7 +162,7 @@ Schema chi tiết: `docs/CORPUS.md`. Licenses: `docs/DATA_LICENSES.md`.
 
 ## 12. Verification
 
-- `python -m pytest -q` (44 passed expected).
+- `python -m pytest -q` (170 passed, 1 skipped expected; the skipped one needs the Stage 5 env).
 - `python -m py_compile` on 3 entry points: `src/speechify_run.py`, `src/synthesis/run.py`, `tts_render/convert_spoken.py`.
 - Smoke: 1 dialogue end-to-end (e.g. `interviewer/work_0000`) Stages 1→5 on CPU, check `var00/dialogue.wav` + LUFS `-23`.
 - Troubleshooting: `docs/TROUBLESHOOTING.md`.

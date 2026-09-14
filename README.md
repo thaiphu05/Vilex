@@ -62,11 +62,11 @@ pip install -r requirements-stage5.txt
 
 - **Gemini models** (`gemini-*`): Google GenAI OpenAI-compat, `GEMINI_API_KEY` or service-account JSON. **Default for Vilex.**
 - **OpenAI models** (`gpt-*`, `o1`, `o3`, `o4`): `OPENAI_API_KEY`.
-- **Open-weight models** (`Qwen/...`): self-hosted at `--base_url` (default `localhost:8000`).
+- **Open-weight models** (`Qwen/...`): self-hosted at `llm.base_url` (default `localhost:8000`).
 
-Stage 4 has three independent LLM roles: `--llm_model_name` (writer), `--boundary_model_name` (slot detection), `--tt_model_name` (turn-taking predictor). Or use `--hf_model_name_or_path` for the Stage 3 LoRA predictor.
+Stage 4 has three independent LLM roles: `llm.writer_model` (writer), `llm.boundary_model` (slot detection), `llm.tt_model` (turn-taking predictor). Or set `stage4_synthesis.hf_model_name_or_path` for the Stage 3 LoRA predictor.
 
-Defaults are now Vietnamese: `--target_language vi`, `--tts_backend omnivoice`, `--language vi`. For English use `--target_language en --tts_backend chatterbox --language en`.
+Defaults are now Vietnamese: `run.target_language: vi`, `stage5_tts.backend: omnivoice`, `stage5_tts.language: vi`. For English set `VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_TTS__BACKEND=chatterbox VILEX_STAGE5_TTS__LANGUAGE=en`.
 
 ## Quickstart (Vietnamese, default)
 
@@ -102,7 +102,7 @@ python tts_render/convert_spoken.py
 VILEX_RUN__DATASETS='[interviewer]' .venv/bin/python -m src.synthesis.run
 ```
 
-**Stage 3 — train the turn-taking predictor** (optional: the pipeline above falls back to the LLM predictor configured via `--tt_model_name`). Run this separately to train the HF LoRA predictor:
+**Stage 3 — train the turn-taking predictor** (optional: the pipeline above falls back to the LLM predictor configured via `llm.tt_model`). Run this separately to train the HF LoRA predictor:
 
 ```bash
 .venv/bin/python -m src.train_turntaking_hf \

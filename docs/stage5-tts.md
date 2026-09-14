@@ -1,27 +1,45 @@
 # Stage 5: TTS rendering
 
-Renders the Stage 4 result to two-channel audio with Chatterbox.
+Renders the Stage 4 result to two-channel audio with OmniVoice (Vietnamese,
+default) or Chatterbox (English, legacy).
 
 > For the model inventory, constants, and per-turn pipeline, see
 > [stage5-internals](stage5-internals.md).
 
-```bash
-.venv-tts/bin/python tts_render/convert_spoken.py \
-  --prompt_dir tts_render/prompt_wavs \
-  --input_glob 'outputs/generated_dialogues_with_hf_swbd_plus_backchannels/**/*.json' \
-  --save_dir outputs/audios_chatterbox \
-  --num_variants 10
+Like every stage it is config-driven — no dataset/flag CLI beyond an optional
+`--config PATH` (see [CONFIGURATION.md](CONFIGURATION.md)):
+
+```yaml
+run:
+  target_language: vi
+stage5_tts:
+  backend: omnivoice
+  language: vi
+  device: cpu
+  num_variants: 1
+  max_dialogues: 0        # 0 = all
+paths:
+  bc_root: data/vi_tt_bc  # input (Stage 4b output)
+  audio_root: data/vi_audio
 ```
 
-Note the **other interpreter** (`.venv-tts`, see [Setup](../README.md#setup))
-and that this is run as a *file path*, not as a `-m` module like Stages 1-4.
+```bash
+.venv/bin/python tts_render/convert_spoken.py            # reads ./config.yaml
+.venv/bin/python tts_render/convert_spoken.py --config my.yaml
+```
 
-Each dialogue is rendered into `--num_variants` two-channel variants: the
-assistant uses a fixed cloning prompt (`tts_render/prompt_wavs/assistant_en.wav`,
-a held-out LibriSpeech speaker — see `tts_render/prompt_wavs/PROVENANCE.md`) and
-each variant's user voice is sampled from a distinct LibriSpeech speaker.
-Backchannels are synthesized by Chatterbox through the same voice prompt as the
-speaker uttering them, so they match that variant's voice.
+Note the **other interpreter** (`.venv-tts` / the OmniVoice env, see
+[Setup](../README.md#setup)) and that this is run as a *file path*, not as a
+`-m` module like Stages 1-4.
+
+Each dialogue is rendered into `stage5_tts.num_variants` two-channel variants,
+seeded per dialogue from `stage5_tts.seed`. Under Chatterbox the assistant uses
+a fixed cloning prompt (`tts_render/prompt_wavs/assistant_en.wav`, a held-out
+LibriSpeech speaker) and each variant's user voice is sampled from a distinct
+LibriSpeech speaker (bundled 12-speaker sample). Under OmniVoice both voices come
+from the per-speaker `instruct` strings (`stage5_tts.voice.*`). Backchannels are
+synthesized through the same voice as the speaker uttering them, so they match
+that variant.
 
 > [!IMPORTANT]
 > **Chatterbox renders backchannels poorly.** Short interjections — `mhm`,
@@ -36,39 +54,37 @@ speaker uttering them, so they match that variant's voice.
 
 ## Output layout
 
-`--input_glob` is matched against the Stage 4 output layout, and the trailing
+Every `paths.bc_root/**/*.json` is matched, and the trailing
 `text_dialogue_<dataset>/<split>/` of each input path is mirrored under
-`--save_dir`:
+`paths.audio_root`:
 
 ```
-outputs/audios_chatterbox/text_dialogue_interviewer/train/work_0000/var00/
+data/vi_audio/text_dialogue_interviewer/train/work_0000/var00/
 ├── dialogues/dialogue.wav     # the full two-channel mix
 ├── utterances/00.wav ...      # one two-channel file per utterance, pre-mix
 ├── backchannels/05_0.wav ...  # <utterance>_<slot>, the isolated backchannel
-└── meta.json                  # per-utterance text, timings, and the voice used
+├── meta.json                  # per-utterance text, timings, and the voice used
+└── alignment_user.json        # only when save_align_json: true
+    alignment_assistant.json   #   (word-level timestamps per speaker)
 ```
 
 `dialogue.wav` is 24 kHz 16-bit stereo with **channel 0 = assistant, channel 1 =
 user** — the channels are swapped on the way out so the assistant lands first,
 which is the order `personaplex-finetune` expects. `meta.json` records that as
-`"speakers": ["assistant", "user"]`, along with `user_prompt_wav` and
-`user_prompt_speaker_id` for the variant's LibriSpeech voice.
+`"speakers": ["assistant", "user"]`, along with the voice used for the variant.
 
-A variant whose `dialogue.wav` and `meta.json` both exist is skipped, so a
-re-run resumes rather than re-synthesizing. Voice casting is seeded per dialogue
-from `--seed` and the file name, so a resumed run fills the missing variants
-from the same cast as the ones already on disk.
+A variant whose `dialogue.wav` and `meta.json` both exist (and the alignment
+files, when `save_align_json` is on) is skipped, so a re-run resumes rather than
+re-synthesizing. Voice casting is seeded per dialogue from `stage5_tts.seed` and
+the file name, so a resumed run fills the missing variants from the same cast as
+the ones already on disk.
 
 ## Cost knobs
 
-Rendering runs at roughly real time, so cap a trial run: `--max_dialogues N`
-takes only the first N dialogues, and `--num_variants` scales the per-dialogue
-cost linearly. To spread a full render over several GPUs, give each worker the
-same command with `--num_shards W --shard_id I`; shards partition the file list,
-and since each writes its own dialogue directories they can share one
-`--save_dir`. `--input_glob` accepts several globs, which are concatenated and
-de-duplicated, and `--exclude_ids_file` skips dialogue stems listed one per
-line.
+Rendering runs at roughly real time, so cap a trial run: `stage5_tts.max_dialogues
+N` takes only the first N dialogues, and `stage5_tts.num_variants` scales the
+per-dialogue cost linearly. (Sharding is not exposed in the config; run separate
+`paths.audio_root` trees if you parallelise.)
 
 ## Dropped inputs
 
@@ -83,21 +99,20 @@ variants, and exits non-zero if it rendered nothing at all.
 
 ## Voices
 
-By default `--librispeech_root` points at the 12-speaker sample bundled in
-`tts_render/librispeech_samples/`, so this runs out of the box. That sample
-bounds `--num_variants` at 12; for paper-scale rendering, download the full
-[LibriSpeech](https://www.openslr.org/12) corpus and pass `--librispeech_root
-/path/to/LibriSpeech --librispeech_subsets train-clean-100,train-clean-360`.
+The Chatterbox path uses the 12-speaker LibriSpeech sample bundled in
+`tts_render/librispeech_samples/`, so it runs out of the box; that sample bounds
+`num_variants` at 12. For paper-scale English rendering, download the full
+[LibriSpeech](https://www.openslr.org/12) corpus and point the code's
+`librispeech_root` at it (not currently a config key; this path is legacy).
 
 ## Vietnamese rendering with OmniVoice
 
-Stage 5 can also render **Vietnamese** dialogues with
-[k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice) instead of Chatterbox.
-This is the path used to render the Vietnamese dialogues in this project
-(Stages 1-4 emit Vietnamese via Gemini; see [stage4-generation](stage4-generation.md)
-and the `--target_language vi` flags). OmniVoice needs **no voice-prompt audio**
-— it uses a *voice-design* `instruct` string per speaker — and it runs in its
-own environment (see `requirements-stage5.txt`, Block C); NeMo is **not** required.
+Stage 5 renders **Vietnamese** dialogues with
+[OmniVoice](https://github.com/k2-fsa/OmniVoice) — the default and the path used
+for this project (Stages 1-4 emit Vietnamese via Gemini; `run.target_language:
+vi`). OmniVoice needs **no voice-prompt audio** — it uses a *voice-design*
+`instruct` string per speaker — and it runs in its own environment (see
+`requirements-stage5.txt`, Block C); NeMo is **not** required.
 
 ```bash
 conda create -n vilex-omnivoice python=3.11 -y
@@ -105,42 +120,60 @@ conda activate vilex-omnivoice
 pip install torch==2.8.* --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements-stage5.txt
 
-python tts_render/convert_spoken.py \
-  --tts_backend omnivoice \
-  --language vi \
-  --omnivoice_user_instruct "male, northern accent" \
-  --omnivoice_assistant_instruct "female, gentle" \
-  --input_glob 'data/vi_tt/**/*.json' \
-  --save_dir outputs/audios_omnivoice \
-  --num_variants 1 \
-  --max_dialogues 1
+python tts_render/convert_spoken.py   # config: backend omnivoice, language vi
 ```
 
-What changes under `--tts_backend omnivoice --language vi`:
+A smoking-test `config.yaml` for one Vietnamese sample:
+
+```yaml
+stage5_tts:
+  backend: omnivoice
+  language: vi
+  num_variants: 1
+  max_dialogues: 1        # one sample before a full render
+  voice:
+    user_instruct: "male, northern accent"
+    assistant_instruct: "female, gentle"
+paths:
+  bc_root: data/vi_tt_bc
+  audio_root: data/vi_audio
+```
+
+What changes under `backend: omnivoice` / `language: vi`:
 
 * **TTS backend.** `generate_audio()` calls `OmniVoice.generate(text, instruct,
   language="Vietnamese", normalize_text=True)`; `instruct` is the per-speaker
   voice-design string (no LibriSpeech prompt, no cumulative voice audio).
 * **Align language.** whisperx `load_align_model(language_code="vi")` (backchannel
-  timing only — whisperx is kept for this purpose).
+  and word-alignment timing — whisperx is kept for this purpose).
 * **No NeMo.** `normalizer=None`; word counting falls back to a Vietnamese regex
   (`_VI_WORD_RE`) instead of `Normalizer.normalize`.
 * **Sentence splitting.** `split_sentences()` avoids the English-only `nltk`
   punkt model and splits on `.<>?`/`!` for Vietnamese.
 * **Backchannels.** Vietnamese fallbacks (`ưm`, `à`, `ừ`, `vâng`, `phải`,
   `thật không`, `ồ`) and a rising-intonation set (`_BC_RISING_TOKENS`) replace the
-  English `yeah/uh-huh` defaults.
-* **Sample rate.** OmniVoice runs at 24 kHz (`TARGET_SR = 24000`); the output
-  layout is identical to the Chatterbox path.
+  English `yeah/uh-huh` defaults (`stage5_tts.backchannels.*`).
+* **Sample rate.** OmniVoice runs at 24 kHz (`stage5_tts.target_sr = 24000`); the
+  output layout is identical to the Chatterbox path.
 * **Paralinguistic tags.** By default tags (`[laughter]`, `[sigh]`,
   `[question-*]`, `[surprise-*]`, `[confirmation-en]`, `[dissatisfaction-hnn]`)
   are stripped before `generate()` because the checkpoint otherwise reads them as
-  literal text. Pass `--omnivoice_render_tags` to keep the 13 supported tags so
-  OmniVoice renders them as audio; unknown tags are still stripped.
+  literal text. Set `stage5_tts.tags.render: true` to keep the 13 supported tags
+  (`stage5_tts.tags.supported`) so OmniVoice renders them as audio; unknown tags
+  are still stripped.
+* **Word alignments for timestamps.** Set `stage5_tts.audio.save_align_json: true`
+  to also write `alignment_user.json` and `alignment_assistant.json` next to
+  `meta.json` in each `varNN/`. Each entry lists `turn`, `kind`
+  (`utterance`/`backchannel`), `text`, absolute `start_sec`/`end_sec`, and
+  word-level `words[{word,start,end,score}]` (times absolute in the merged
+  dialogue). Utterance words come from `whisperx.align`; backchannel words come
+  from alignment when the BC has more than one word, otherwise an even split of
+  its clip span. Enabling it makes those files part of the resume check (existing
+  variants are re-rendered to fill them in).
 
 > [!NOTE]
 > OmniVoice's voice-design was tuned mostly on Chinese/English; Vietnamese voice
-> quality and stability can vary. Verify one `--max_dialogues 1` sample before a
-> full render, and tune the `--omnivoice_*_instruct` strings to taste. If you
-> already have **English** Stage 4 JSONs, translate them to Vietnamese first with
+> quality and stability can vary. Verify one `stage5_tts.max_dialogues: 1` sample
+> before a full render, and tune `stage5_tts.voice.*` to taste. If you already have
+> **English** Stage 4 JSONs, translate them to Vietnamese first with
 > `tools/translate_dialogues.py` (preserves `[TAKE_FLOOR]` and backchannel slots).

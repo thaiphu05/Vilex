@@ -49,14 +49,23 @@ Secrets stay in the environment and are **never** read from the YAML:
 | Section | Controls |
 |---|---|
 | `run` | `seed`, `datasets`, `splits`, `target_language`, `dry_run`, `test_parse` |
-| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `data_root`, `input_path`, `voice_clone_pool`, `logdir`) |
+| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`, `logdir`) |
 | `llm` | model names per role (writer / boundary / tt / bc), `base_url`s, `api_key`, `temperature`, `gemini_min_interval`, `gemini_location` |
 | `stage1_speechify` | sample budgets, `max_variants`, `interviewer_subset`, `temperature`, `concise` |
 | `stage1_5_cross_turn` | `perror`, `seed`, `roles`, `min_digits`, `min_code_len` |
 | `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |
 | `stage4_synthesis` | `max_turns`, `max_dialogues`, `max_workers`, temperatures, `guards`, `ft_terminal_punct`, `hesitations`, `judge`, `hf` |
 | `stage4b_backchannel` | `max_tokens`, `temperature`, `max_retries`, `valid_max_words`, fallback pools |
-| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+
+### Single-file corpora (`paths.input_path` / `paths.input_paths`)
+
+Priority: **`input_paths[dataset]` > `input_path` (global fallback) > `data_root`**.
+
+- **Run all 5**: `input_path: ""` + `input_paths.persuader: <file>` — socraticlm
+  falls back to `data_root/SocraticLM/...`, multiwoz/negotiator to `data_root`.
+- **Only persuader**: `input_paths.persuader: <file>` **or** `input_path: <file>`.
+- **Only socraticlm**: `data_root` (`SocraticLM/...`) **or** `input_paths.socraticlm: <file>`.
 
 Each stage loops over `run.datasets` × `run.splits` internally, so a single
 invocation processes every dataset/split declared there.
@@ -67,5 +76,5 @@ invocation processes every dataset/split declared there.
   (large text blocks, not config).
 - **Regexes and structural tokens** (`[TAKE_FLOOR]`, `[BACKCHANNEL]`,
   `[PAUSE]`) stay in code.
-- `tools/test_config.py` covers the merge/precedence behaviour; see
-  `config.yaml` for every key with its default value.
+- `tests/test_config.py` covers the merge/precedence behaviour; see
+  `config_example.yaml` for every key with its default value.
