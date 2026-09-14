@@ -248,9 +248,29 @@ def test_input_path_overrides_data_root_for_socraticlm():
     assert corpus_path("socraticlm", "all", args).startswith("/data/SocraticLM")
 
     # A single path cannot stand in for both files of a split-per-file corpus.
-    args = argparse.Namespace(input_path="/tmp/x.json", data_root=None)
-    with pytest.raises(ValueError, match="--data-root is required"):
+    args = argparse.Namespace(input_path="/tmp/x.json", input_paths={}, data_root=None)
+    with pytest.raises(ValueError, match="paths.data_root is required"):
         corpus_path("multiwoz", "train", args)
+
+
+def test_input_paths_per_dataset_overrides_global_input_path():
+    """A multi-dataset run can point each single-file corpus at its own file."""
+    from src.speechify_run import _dataset_input_path, corpus_path
+
+    args = argparse.Namespace(
+        input_path="/tmp/global.json",
+        input_paths={"persuader": "/tmp/pers.json", "socraticlm": ""},
+        data_root="/data",
+    )
+    assert corpus_path("persuader", "all", args) == "/tmp/pers.json"
+    # Empty per-dataset entry falls back to the global path.
+    assert corpus_path("socraticlm", "all", args) == "/tmp/global.json"
+    # A dataset absent from the map also falls back.
+    assert _dataset_input_path("negotiator", args) == "/tmp/global.json"
+
+    # No overrides at all -> data_root.
+    empty = argparse.Namespace(input_path=None, input_paths={}, data_root="/data")
+    assert corpus_path("socraticlm", "all", empty).startswith("/data/SocraticLM")
 
 
 def test_no_stage_hardcodes_the_vllm_only_extra_body():

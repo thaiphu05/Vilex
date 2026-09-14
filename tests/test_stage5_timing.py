@@ -29,6 +29,8 @@ from tts_render.convert_spoken import (  # noqa: E402
     USER_INTERRUPT_OVERLAP_SEC,
     USER_INTERRUPT_PROB,
     _INTENTIONAL_BRACKET_TOKENS,
+    _build_alignment_payloads,
+    _even_words,
     _sample_gap,
     _sample_intra_pause,
     _sample_pause,
@@ -203,3 +205,91 @@ def test_overlap_cap_positive():
 def test_gap_bounds_consistent():
     assert GAP_MIN_SEC < GAP_EXP_SCALE < GAP_MAX_SEC
     assert PAUSE_MIN_SEC < PAUSE_EXP_SCALE < PAUSE_MAX_SEC
+
+
+# --- start_sample + alignment payloads ---------------------------------------
+
+
+class TestStartSample:
+    def test_start_sample_recorded_and_monotonic(self):
+        random.seed(0)
+        np.random.seed(0)
+        speech = [_two_ch_silence(2400) for _ in range(3)]
+        meta = [
+            {"uttr_type": None, "speaker": 0, "tts_text": "a", "boundary": "turn"},
+            {"uttr_type": None, "speaker": 1, "tts_text": "b", "boundary": "turn"},
+            {"uttr_type": None, "speaker": 0, "tts_text": "c", "boundary": "turn"},
+        ]
+        merged = aggregate_speech(speech, meta)
+        for sm in meta:
+            assert "start_sample" in sm
+        assert meta[0]["start_sample"] == 0
+        assert meta[1]["start_sample"] >= 2400
+        assert meta[2]["start_sample"] >= meta[1]["start_sample"]
+        # The last utterance ends at (or before) the merged length.
+        assert meta[2]["start_sample"] + 2400 <= merged.size(1)
+
+
+class TestEvenWords:
+    def test_splits_span_evenly(self):
+        words = _even_words("xin chào bạn", 1.0, 4.0)
+        assert [w["word"] for w in words] == ["xin", "chào", "bạn"]
+        assert words[0]["start"] == 1.0
+        assert words[-1]["end"] == 4.0
+        assert all(w["score"] is None for w in words)
+
+    def test_empty_text(self):
+        assert _even_words("", 0.0, 1.0) == []
+
+
+class TestAlignmentPayloads:
+    def test_splits_by_speaker_and_absolutizes_times(self):
+        import torch
+
+        speech_meta = [
+            {"start_sample": 0, "speaker": 0},
+            {"start_sample": 24000, "speaker": 1},
+        ]
+        total_speech = [torch.zeros(2, 24000), torch.zeros(2, 12000)]
+        align = {
+            "utterances": [
+                {
+                    "host_idx": 0,
+                    "speaker": 0,
+                    "text": "xin chào",
+                    "words": [{"word": "xin", "start": 0.0, "end": 0.5, "score": 0.9}],
+                },
+                {
+                    "host_idx": 1,
+                    "speaker": 1,
+                    "text": "dạ vâng",
+                    "words": [],
+                },
+            ],
+            "backchannels": [
+                {
+                    "host_idx": 0,
+                    "speaker": 1,
+                    "text": "ừ",
+                    "local_start_sec": 0.5,
+                    "length_sec": 0.4,
+                    "words": [],
+                }
+            ],
+        }
+        payloads = _build_alignment_payloads("work_0000", 0, speech_meta, align, total_speech)
+
+        user_turns = payloads["user"]["turns"]
+        assistant_turns = payloads["assistant"]["turns"]
+        assert [t["kind"] for t in user_turns] == ["utterance"]
+        assert user_turns[0]["words"][0]["start"] == 0.0
+        # assistant has its own utterance + the BC placed on host 0
+        assert {t["kind"] for t in assistant_turns} == {"utterance", "backchannel"}
+        bc = next(t for t in assistant_turns if t["kind"] == "backchannel")
+        # BC absolute start = host 0 start (0) + local 0.5, single word spans clip
+        assert bc["start_sec"] == 0.5
+        assert bc["end_sec"] == 0.9
+        assert bc["words"][0]["word"] == "ừ"
+        assert bc["words"][0]["start"] == 0.5
+        # turns sorted by start_sec
+        assert assistant_turns == sorted(assistant_turns, key=lambda t: t["start_sec"])

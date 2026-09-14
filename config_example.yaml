@@ -27,7 +27,18 @@ paths:
   bc_root: data/vi_tt_bc                 # Stage 4b output
   audio_root: data/vi_audio              # Stage 5 output
   data_root: data/raw                    # multiwoz / negotiator / socraticlm
-  input_path: ""                         # persuader single-file corpus
+  input_path: ""                         # global fallback for single-file corpora
+  # Per-dataset single-file paths. Priority: input_paths[dataset] > input_path
+  # > data_root. Examples:
+  #   Run all 5 at once -- leave input_path empty and point persuader here (it
+  #   has no data_root entry); socraticlm resolves under data_root:
+  #     input_paths:
+  #       persuader: /abs/path/DailyPersuasion_full_version.json
+  #   Only persuader: set input_paths.persuader (or input_path) to its file.
+  #   Only socraticlm: use data_root, or input_paths.socraticlm: /abs/...json.
+  input_paths:
+    persuader: ""
+    socraticlm: ""
   voice_clone_pool: data/voice_clone     # Stage 5 reference wavs + .txt sidecars
   logdir: data/logs
 
@@ -113,6 +124,7 @@ stage4_synthesis:
   judge:
     stop_check_every: 0      # 0 disables the judge early-stop
     min_turns_before_stop: 2
+  hf_model_name_or_path: ""  # optional Stage 3 LoRA adapter dir (wins over llm.tt_model)
   hf:
     max_seq_length: 1024
     use_last_n_history: 4
@@ -162,6 +174,12 @@ stage5_tts:
     backchannel_attenuation: 0.8
     vad_threshold: 0.3
     max_prompt_secs: 10
+    # Write per-variant word-level forced-alignment JSON for training on timestamps:
+    #   alignment_user.json + alignment_assistant.json (absolute times in the merged
+    #   timeline; utterances from whisperx.align, backchannels from alignment when
+    #   >1 word else an even split of the clip span). Enabling it makes the align
+    #   files part of the resume/skip check, so existing variants are re-rendered.
+    save_align_json: false
   voice:
     user_instruct: "male, northern accent"
     assistant_instruct: "female, gentle"

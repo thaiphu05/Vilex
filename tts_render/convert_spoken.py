@@ -50,6 +50,9 @@ TTS_LANGUAGE = "vi"  # "vi" -> OmniVoice; "en" -> Chatterbox
 # When True (--omnivoice_render_tags) renderable paralinguistic tags are kept in
 # the TTS text so OmniVoice speaks them; unknown tags are still stripped.
 RENDER_TAGS = False
+# When True (stage5_tts.audio.save_align_json) write per-variant word-level
+# forced-alignment JSON (alignment_user.json / alignment_assistant.json).
+SAVE_ALIGN_JSON = False
 # Per-speaker voice-design instructs for OmniVoice (index 0=user, 1=assistant).
 OMNI_INSTRUCTS = ["male, northern accent", "female, gentle"]
 
@@ -730,11 +733,13 @@ def aggregate_speech(total_speech, total_speech_meta):
     # First chunk: no transition.
     total_speech_meta[0]["timing"] = "none"
     total_speech_meta[0]["duration_sec"] = 0.0
+    total_speech_meta[0]["start_sample"] = 0
 
     for i, (speech, meta) in enumerate(zip(total_speech, total_speech_meta)):
         if i == 0:
             continue
         prev_meta = total_speech_meta[i - 1]
+        prev_len = merged_speech.size(1)
 
         curr_turn_dur = speech.size(1) / TARGET_SR
 
@@ -756,6 +761,7 @@ def aggregate_speech(total_speech, total_speech_meta):
             )
             meta["timing"] = "overlap"
             meta["duration_sec"] = round(overlap_len / TARGET_SR, 4)
+            meta["start_sample"] = max(0, prev_len - overlap_len)
 
         # --- Branch 2: speaker change, no explicit interrupt ---
         elif meta["speaker"] != prev_meta["speaker"]:
@@ -776,6 +782,7 @@ def aggregate_speech(total_speech, total_speech_meta):
                     merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
                     meta["timing"] = "gap"
                     meta["duration_sec"] = round(gap_sec, 4)
+                    meta["start_sample"] = prev_len + gap_samples
                 else:
                     overlap_samples = min(
                         overlap_samples_max, merged_speech.size(1), speech.size(1)
@@ -790,6 +797,7 @@ def aggregate_speech(total_speech, total_speech_meta):
                     )
                     meta["timing"] = "overlap"
                     meta["duration_sec"] = round(overlap_samples / TARGET_SR, 4)
+                    meta["start_sample"] = max(0, prev_len - overlap_samples)
             else:
                 gap_sec = _sample_gap(curr_turn_dur)
                 gap_samples = int(gap_sec * TARGET_SR)
@@ -799,6 +807,7 @@ def aggregate_speech(total_speech, total_speech_meta):
                 merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
                 meta["timing"] = "gap"
                 meta["duration_sec"] = round(gap_sec, 4)
+                meta["start_sample"] = prev_len + gap_samples
 
         # --- Branch 3: same speaker ---
         else:
@@ -811,10 +820,12 @@ def aggregate_speech(total_speech, total_speech_meta):
                 merged_speech = torch.cat((merged_speech, padded_speech), dim=1)
                 meta["timing"] = "pause"
                 meta["duration_sec"] = round(pause_sec, 4)
+                meta["start_sample"] = prev_len + pause_samples
             else:
                 merged_speech = torch.cat((merged_speech, speech), dim=1)
                 meta["timing"] = "none"
                 meta["duration_sec"] = 0.0
+                meta["start_sample"] = prev_len
 
     merged_speech = _loudness_normalize(merged_speech, TARGET_SR)
     return merged_speech
@@ -908,6 +919,141 @@ def _save_cumulative_prompt(audio: torch.Tensor, path: str):
     torchaudio.save(path, trimmed, TARGET_SR)
 
 
+def _align_words_once(align_model, align_meta, audio, text, device):
+    """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels).
+
+    Returns a list of ``{word, start, end, score}`` with times relative to the
+    start of ``audio``; ``[]`` when alignment fails or yields no words.
+    """
+    text = (text or "").strip()
+    if not text or audio.numel() == 0:
+        return []
+    audio_16k = torchaudio.transforms.Resample(orig_freq=TARGET_SR, new_freq=PROMPT_SR)(audio)
+    segments = [{"text": " " + text, "start": 0.0, "end": audio.size(1) / TARGET_SR}]
+    try:
+        result = whisperx.align(
+            segments, align_model, align_meta, audio_16k, device, return_char_alignments=False
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.warning("Alignment failed for %r: %s", text[:40], exc)
+        return []
+    words = []
+    for segment in result.get("segments", []):
+        for w in segment.get("words", []):
+            if "start" in w and "end" in w:
+                words.append(
+                    {
+                        "word": w.get("word", ""),
+                        "start": float(w["start"]),
+                        "end": float(w["end"]),
+                        "score": w.get("score"),
+                    }
+                )
+    return words
+
+
+def _even_words(text, start_sec, end_sec):
+    """Fallback word timings: split [start_sec, end_sec] evenly across the tokens."""
+    tokens = (text or "").split()
+    if not tokens:
+        return []
+    width = (end_sec - start_sec) / len(tokens)
+    return [
+        {
+            "word": tok,
+            "start": start_sec + i * width,
+            "end": start_sec + (i + 1) * width,
+            "score": None,
+        }
+        for i, tok in enumerate(tokens)
+    ]
+
+
+def _build_alignment_payloads(dialogue_id, variant_idx, speech_meta, align, total_speech):
+    """Word-timestamp payloads split by speaker, absolute in the merged timeline.
+
+    Returns ``{"user": {...}, "assistant": {...}}``. Utterance words come from
+    forced alignment; backchannel words come from alignment when the BC has more
+    than one word, else an even split of the BC span.
+    """
+
+    def _name(idx):
+        return "assistant" if idx == 1 else "user"
+
+    payloads = {
+        name: {
+            "dialogue": dialogue_id,
+            "variant": variant_idx,
+            "speaker": name,
+            "sample_rate": TARGET_SR,
+            "turns": [],
+        }
+        for name in ("user", "assistant")
+    }
+
+    for rec in align.get("utterances", []):
+        host_is = rec["host_idx"]
+        start_sec = speech_meta[host_is].get("start_sample", 0) / TARGET_SR
+        dur_sec = total_speech[host_is].size(1) / TARGET_SR
+        payloads[_name(rec["speaker"])]["turns"].append(
+            {
+                "turn": host_is,
+                "kind": "utterance",
+                "text": rec["text"],
+                "start_sec": round(start_sec, 4),
+                "end_sec": round(start_sec + dur_sec, 4),
+                "words": [
+                    {
+                        "word": w["word"],
+                        "start": round(start_sec + w["start"], 4),
+                        "end": round(start_sec + w["end"], 4),
+                        "score": w.get("score"),
+                    }
+                    for w in rec["words"]
+                ],
+            }
+        )
+
+    for rec in align.get("backchannels", []):
+        host_is = rec["host_idx"]
+        start_sec = speech_meta[host_is].get("start_sample", 0) / TARGET_SR + rec["local_start_sec"]
+        end_sec = start_sec + rec["length_sec"]
+        if rec["words"]:
+            words = [
+                {
+                    "word": w["word"],
+                    "start": round(start_sec + w["start"], 4),
+                    "end": round(start_sec + w["end"], 4),
+                    "score": w.get("score"),
+                }
+                for w in rec["words"]
+            ]
+        else:
+            words = [
+                {
+                    "word": w["word"],
+                    "start": round(w["start"], 4),
+                    "end": round(w["end"], 4),
+                    "score": None,
+                }
+                for w in _even_words(rec["text"], start_sec, end_sec)
+            ]
+        payloads[_name(rec["speaker"])]["turns"].append(
+            {
+                "turn": host_is,
+                "kind": "backchannel",
+                "text": rec["text"],
+                "start_sec": round(start_sec, 4),
+                "end_sec": round(end_sec, 4),
+                "words": words,
+            }
+        )
+
+    for payload in payloads.values():
+        payload["turns"].sort(key=lambda t: t["start_sec"])
+    return payloads
+
+
 def main_process(
     model, vad_model, align, args, index, origin_dialogue, prompt_paths, tmpdir,
     normalizer=None, speaker_refs=None,
@@ -919,6 +1065,9 @@ def main_process(
 
     total_speech = []
     total_speech_meta = []
+    # Word-alignment records (filled only when SAVE_ALIGN_JSON).
+    align_utt = []
+    align_bc = []
 
     init_spk = dialogue["utterances_with_bc"][0]["speaker"]
     spk_offset = 1 if init_spk == DEFAULT_SPEAKERS[1] else 0
@@ -1212,8 +1361,10 @@ def main_process(
 
             else:
                 listener_speech = torch.zeros_like(tts_speech)
+                host_idx = len(total_speech)
 
-                if bc_queue[other_idx]:
+                all_words = []
+                if SAVE_ALIGN_JSON or bc_queue[other_idx]:
                     if normalizer is not None:
                         tts_text_for_align = _strip_paralinguistic(
                             normalizer.normalize(
@@ -1223,29 +1374,18 @@ def main_process(
                     else:
                         tts_text_for_align = _strip_paralinguistic(tts_text)
                     tts_text_for_align = tts_text_for_align.replace("[PAUSE]", " ").strip()
-                    segments = [
-                        {
-                            "text": " " + tts_text_for_align.strip(),
-                            "start": 0.0,
-                            "end": tts_speech.size(1) / TARGET_SR,
-                        }
-                    ]
-                    tts_speech_16k = torchaudio.transforms.Resample(
-                        orig_freq=TARGET_SR, new_freq=PROMPT_SR
-                    )(tts_speech)
-
-                    align_results = whisperx.align(
-                        segments,
-                        model_a,
-                        metadata,
-                        tts_speech_16k,
-                        args.device,
-                        return_char_alignments=False,
+                    all_words = _align_words_once(
+                        model_a, metadata, tts_speech, tts_text_for_align, args.device
                     )
-                    all_words = []
-                    for segment in align_results["segments"]:
-                        all_words.extend(segment["words"])
-                    all_words = [w for w in all_words if "end" in w]
+                    if SAVE_ALIGN_JSON:
+                        align_utt.append(
+                            {
+                                "host_idx": host_idx,
+                                "speaker": curr_idx,
+                                "text": tts_text_for_align,
+                                "words": all_words,
+                            }
+                        )
 
                 if bc_queue[other_idx] and not all_words:
                     # No word survived alignment, so there is nothing to anchor the
@@ -1302,6 +1442,28 @@ def main_process(
 
                         uttered_bc_list.append({"speech": bc_speech, "text": bc["text"]})
 
+                        if SAVE_ALIGN_JSON:
+                            bc_text = bc["text"]
+                            # Only multi-word backchannels are worth aligning; a
+                            # single-word BC spans its whole clip.
+                            bc_words = (
+                                _align_words_once(
+                                    model_a, metadata, bc_speech, bc_text, args.device
+                                )
+                                if len(bc_text.split()) > 1
+                                else []
+                            )
+                            align_bc.append(
+                                {
+                                    "host_idx": host_idx,
+                                    "speaker": other_idx,
+                                    "text": bc_text,
+                                    "local_start_sec": start / TARGET_SR,
+                                    "length_sec": bc_speech.size(1) / TARGET_SR,
+                                    "words": bc_words,
+                                }
+                            )
+
                 if curr_idx == 0:
                     speech = [tts_speech, listener_speech]
                 else:
@@ -1349,6 +1511,8 @@ def main_process(
 
     dialogue["utterances_with_bc"] = modified_utterances
     dialogue["speech_meta"] = total_speech_meta
+    if SAVE_ALIGN_JSON:
+        dialogue["align"] = {"utterances": align_utt, "backchannels": align_bc}
 
     return merged_speech, total_speech, backchannel_list, dialogue
 
@@ -1360,7 +1524,7 @@ def _apply_tts_config(cfg):
     global PAUSE_EXP_SCALE, PAUSE_MIN_SEC, PAUSE_MAX_SEC
     global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
-    global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP
+    global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON
     global OMNI_PARALINGUIST_TAGS, RENDERABLE_TAGS, _PARALINGUIST_RE
     global DEFAULT_BC_CANDIDATES, DEFAULT_BC_CANDIDATES_VI, _BC_RISING_TOKENS
 
@@ -1396,6 +1560,7 @@ def _apply_tts_config(cfg):
     MAX_PROMPT_SECS = audio.get("max_prompt_secs", MAX_PROMPT_SECS)
     TARGET_LUFS = audio.get("target_lufs", TARGET_LUFS)
     NOISE_FLOOR_AMP = audio.get("noise_floor_amp", NOISE_FLOOR_AMP)
+    SAVE_ALIGN_JSON = bool(audio.get("save_align_json", SAVE_ALIGN_JSON))
 
     supported = tags.get("supported")
     if isinstance(supported, list) and supported:
@@ -1432,6 +1597,7 @@ def _build_tts_args(cfg):
         omnivoice_user_instruct=voice.get("user_instruct", "male, northern accent"),
         omnivoice_assistant_instruct=voice.get("assistant_instruct", "female, gentle"),
         omnivoice_render_tags=bool(tags.get("render", False)),
+        save_align_json=bool((s5.get("audio") or {}).get("save_align_json", False)),
         prompt_dir=str(_Path(__file__).resolve().parent / "prompt_wavs"),
         voices_dir=str(_Path(__file__).resolve().parent / "user_wavs"),
         librispeech_root=str(_Path(__file__).resolve().parent / "librispeech_samples"),
@@ -1494,7 +1660,7 @@ def main(args):
     )
 
     # Resolve every input before touching a GPU: loading Chatterbox, whisperx and the
-    # NeMo grammars costs a couple of minutes, and a mistyped --input_glob or a missing
+    # NeMo grammars costs a couple of minutes, and a bad paths.bc_root or a missing
     # prompt wav should not cost that before it is reported.
     assistant_prompt_path = (
         load_assistant_prompt_path(args.prompt_dir) if TTS_BACKEND == "chatterbox" else None
@@ -1510,11 +1676,12 @@ def main(args):
 
         if len(speaker_pool) < args.num_variants:
             raise SystemExit(
-                f"--num_variants {args.num_variants} needs that many distinct user voices, but "
-                f"{args.librispeech_root} yields only {len(speaker_pool)} speakers for subsets "
-                f"{libri_subsets}. Lower --num_variants, or point --librispeech_root at a full "
-                "LibriSpeech download (https://www.openslr.org/12) and widen "
-                "--librispeech_subsets. The bundled sample holds 12 speakers."
+                f"stage5_tts.num_variants={args.num_variants} needs that many distinct user "
+                f"voices, but {args.librispeech_root} yields only {len(speaker_pool)} speakers "
+                f"for subsets {libri_subsets}. Lower stage5_tts.num_variants, or point the code's "
+                "librispeech_root at a full LibriSpeech download "
+                "(https://www.openslr.org/12) and widen librispeech_subsets. The bundled sample "
+                "holds 12 speakers."
             )
 
     seen = set()
@@ -1528,11 +1695,11 @@ def main(args):
 
     if not json_files:
         raise SystemExit(
-            f"No input dialogues matched --input_glob {args.input_glob}. Stage 5 reads the "
-            "Stage 4 output layout, <save_root>/text_dialogue_<dataset>/<split>/*.json -- e.g. "
-            "--input_glob 'outputs/generated_dialogues_with_hf_swbd_plus_backchannels/**/*.json'. "
-            "Quote the glob so the shell does not expand it, and note '**' needs the two-level "
-            "scenario/split path underneath the root."
+            f"No input dialogues matched {args.input_glob}. Stage 5 reads paths.bc_root, which "
+            "must hold the Stage 4b output layout "
+            "<bc_root>/text_dialogue_<dataset>/<split>/*.json. Point paths.bc_root at the "
+            "Stage 4b output directory ('**' needs the two-level scenario/split path "
+            "underneath the root)."
         )
 
     if args.exclude_ids_file:
@@ -1662,8 +1829,13 @@ def main(args):
             variant_dir = args.save_dir / rel_dialogue_dir / f"var{variant_idx:02d}"
             save_audio_fpath = variant_dir / "dialogues" / "dialogue.wav"
             save_json_fpath = variant_dir / "meta.json"
+            align_user_fpath = variant_dir / "alignment_user.json"
+            align_assistant_fpath = variant_dir / "alignment_assistant.json"
 
-            if save_audio_fpath.exists() and save_json_fpath.exists():
+            align_ok = (not SAVE_ALIGN_JSON) or (
+                align_user_fpath.exists() and align_assistant_fpath.exists()
+            )
+            if save_audio_fpath.exists() and save_json_fpath.exists() and align_ok:
                 n_skipped += 1
                 logging.info(f"Skip (already exists): {variant_dir}")
                 continue
@@ -1776,6 +1948,19 @@ def main(args):
 
             with open(save_json_fpath, "w") as jf:
                 json.dump(total_speech_meta, jf, indent=4)
+
+            if SAVE_ALIGN_JSON:
+                payloads = _build_alignment_payloads(
+                    dialogue_id,
+                    variant_idx,
+                    total_speech_meta.get("speech_meta", []),
+                    total_speech_meta.get("align", {}),
+                    total_speech,
+                )
+                with open(align_user_fpath, "w") as uf:
+                    json.dump(payloads["user"], uf, indent=4, ensure_ascii=False)
+                with open(align_assistant_fpath, "w") as af:
+                    json.dump(payloads["assistant"], af, indent=4, ensure_ascii=False)
 
             n_rendered += 1
 

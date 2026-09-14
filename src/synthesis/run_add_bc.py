@@ -18,8 +18,9 @@ API_KEY = "EMPTY"
 PROMPT_KIND = "qwen"  # "qwen" (new, engineered) | "legacy" (original gpt prompt)
 TARGET_LANGUAGE = "vi"  # "en" | "vi" (default vi for Vilex)
 
-# Set from --input_root/--output_root, which are required: the old defaults
-# named a directory no stage writes, so a bare run globbed nothing and exited 0.
+# Set from paths.synthesis_root / paths.bc_root in main(): the old hardcoded
+# defaults named a directory no stage writes, so a bare run globbed nothing and
+# exited 0.
 INPUT_ROOT = None
 OUTPUT_ROOT = None
 

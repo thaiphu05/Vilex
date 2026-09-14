@@ -40,8 +40,8 @@ def test_docs_give_the_expected_on_disk_paths():
 
 def test_docs_flag_persuader_needing_input_path():
     assert (
-        "--input_path" in DOCS
-    ), "persuader raises without --input_path (speechify_run.py:123-129); the docs must say so"
+        "paths.input_path" in DOCS
+    ), "persuader raises without paths.input_path(s) (speechify_run.py); the docs must say so"
 
 
 # Each stage's reference doc, which the README's pipeline table must link to.

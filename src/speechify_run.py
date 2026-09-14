@@ -128,17 +128,31 @@ def split_in_halves(items: list, budget: SampleBudget) -> List[Tuple[str, list]]
     return [("train", picked[:mid]), ("test", picked[mid:])]
 
 
+def _dataset_input_path(dataset_name: str, args) -> str:
+    """Single-file override for one dataset, with the global path as fallback.
+
+    `paths.input_paths` maps a dataset to its own raw file so a multi-dataset
+    run can point, say, persuader and socraticlm at different files. Resolution
+    order: `input_paths[dataset]` > `input_path` > "" (fall through to
+    `data_root`).
+    """
+    per_dataset = getattr(args, "input_paths", None) or {}
+    return per_dataset.get(dataset_name) or args.input_path or ""
+
+
 def corpus_path(dataset_name: str, key: str, args) -> str:
     """Resolve one local corpus location under --data-root.
 
-    Single-file corpora honour an --input_path override; the split-per-file
-    ones cannot, since one path can't stand in for both splits.
+    Single-file corpora honour a per-dataset or global path override; the
+    split-per-file ones cannot, since one path can't stand in for both splits.
     """
-    if key == "all" and args.input_path:
-        return args.input_path
+    if key == "all":
+        override = _dataset_input_path(dataset_name, args)
+        if override:
+            return override
     if not args.data_root:
         raise ValueError(
-            f"--data-root is required for --dataset {dataset_name}: pass the "
+            f"paths.data_root is required for dataset {dataset_name}: set it to the "
             "directory holding your local copies of the raw third-party "
             "datasets (see the Stage 1 table in the README)."
         )
@@ -190,14 +204,16 @@ def get_iterators(dataset_name: str, args, client) -> List[Tuple[str, list]]:
         return split_by_label(list(iter_socrateach(path, max_variants=args.max_variants)), budget)
 
     if dataset_name == "persuader":
-        if not args.input_path:
+        input_path = _dataset_input_path("persuader", args)
+        if not input_path:
             raise ValueError(
-                "--input_path is required for --dataset persuader: pass the path "
-                "to the raw DailyPersuasion dataset json file you downloaded "
-                "(see README for the source and expected filename)."
+                "paths.input_paths.persuader (or paths.input_path) is required "
+                "for dataset persuader: pass the path to the raw DailyPersuasion "
+                "dataset json file you downloaded (see README for the source and "
+                "expected filename)."
             )
         return split_in_halves(
-            list(iter_persuader(args.input_path, max_variants=args.max_variants)), budget
+            list(iter_persuader(input_path, max_variants=args.max_variants)), budget
         )
 
     if dataset_name == "interviewer":
@@ -296,6 +312,7 @@ def _build_args(cfg, split_label):
     return SimpleNamespace(
         data_root=paths.get("data_root") or None,
         input_path=paths.get("input_path") or None,
+        input_paths=paths.get("input_paths") or {},
         save_dir=paths.get("results_root", "data/results_vi"),
         split=split_label,
         max_train_samples=s1.get("max_train_samples", DEFAULT_SAMPLES_PER_SPLIT),
