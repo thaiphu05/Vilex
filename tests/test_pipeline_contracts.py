@@ -80,19 +80,21 @@ def _declared_arg_dests(tree: ast.AST) -> set:
     return dests
 
 
-def test_speechify_run_reads_only_flags_it_declares():
-    """args.max_samples was never a flag: 5 of 7 datasets died on AttributeError."""
-    tree = ast.parse((ROOT / "src/speechify_run.py").read_text())
-    declared = _declared_arg_dests(tree)
-    read = {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "args"
-    }
-    missing = sorted(read - declared)
-    assert not missing, f"speechify_run.py reads args.{{{','.join(missing)}}}, never declared"
+def test_stage_entrypoints_are_config_driven():
+    """Every stage reads config.yaml and exposes only `--config`, not its own flags."""
+    stage_files = [
+        "src/speechify_run.py",
+        "src/cross_turn_slots.py",
+        "src/disfluency.py",
+        "src/synthesis/run.py",
+        "src/synthesis/run_add_bc.py",
+        "tts_render/convert_spoken.py",
+    ]
+    for path in stage_files:
+        src = (ROOT / path).read_text()
+        assert 'add_argument("--config"' in src, f"{path} does not expose --config"
+        assert src.count("add_argument") == 1, f"{path} still declares extra argparse flags"
+    assert (ROOT / "config_example.yaml").is_file(), "config_example.yaml is missing"
 
 
 def test_data_root_is_optional_for_hub_backed_datasets():
@@ -290,12 +292,11 @@ def test_no_thinking_extra_body_gemini_gets_thinking_budget_marker():
 
 
 def test_stage4_max_turns_default_is_zero_auto():
-    """--max_turns 0 means auto = len(source_turns); non-zero is an optional cap."""
-    src = (ROOT / "src/synthesis/run.py").read_text()
-    assert (
-        'parser.add_argument(\n        "--max_turns",\n        type=int,\n        default=0,' in src
-    )
-    assert "0 (default) means auto = len(source_turns)" in src
+    """max_turns 0 means auto = len(source_turns); it lives in config.yaml."""
+    from src.config import cfg_get, load_config
+
+    cfg = load_config(ROOT / "config_example.yaml")
+    assert cfg_get(cfg, "stage4_synthesis.max_turns") == 0
 
 
 def test_stage4_passes_stop_check_every_zero():

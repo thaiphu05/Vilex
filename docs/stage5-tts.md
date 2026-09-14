@@ -110,7 +110,7 @@ python tts_render/convert_spoken.py \
   --language vi \
   --omnivoice_user_instruct "male, northern accent" \
   --omnivoice_assistant_instruct "female, gentle" \
-  --input_glob 'outputs/vi_tt/**/*.json' \
+  --input_glob 'data/vi_tt/**/*.json' \
   --save_dir outputs/audios_omnivoice \
   --num_variants 1 \
   --max_dialogues 1

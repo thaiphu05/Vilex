@@ -114,7 +114,7 @@ Steps (`speechify_turn_by_turn` in `src/synthesis/core.py`):
 2. Writer LLM (`--llm_model_name`) generates raw turn: user prompt (brief, disfluency allowed) vs assistant prompt (concise, no disfluency). VI appends `LANG_DIRECTIVE[vi]`.
 3. Sanitize (`sanitize_utterance`): strip `<think>` tags, code fences, `role:`/`index)` prefixes, quotes; em-dash → comma. Contamination → retry up to 3 with corrective reminder, temp `+0.1` per attempt.
 4. If turn is user: run Stage 2 slot detection → query predictor (HF adapter via `--hf_model_name_or_path` takes priority, else `--tt_model_name` chat model).
-5. Insert action tokens with guards (`length_guard_start 0`, `interruption_guard_start 3`, `length_guard_gap 4`): `floor_taking` only from word 3+, max once per turn; backchannels spaced ≥4 words apart; turn start forced `silence`.
+5. Insert action tokens with guards (`length_guard_start 0`, `interruption_guard_start 3`, `length_guard_gap 4`): `floor_taking` = one decision per turn from word 3+, candidate = boundary with max `p_ft` (sentence-ending `. ? !` boundaries are eligible); sampled once with its raw probability; backchannels spaced ≥4 words apart; turn start forced `silence`.
 6. Only `[TAKE_FLOOR]` enters transcript text (truncates turn). Backchannel decisions stored in turn `history` metadata (`word_index`, `probs`, `decision`), stripped from LLM context of next turns.
 7. Every `stop_check_every` turns after minimum 2: judge LLM (`DONE_JUDGE_PROMPT`) decides early stop (coverage done vs stalled).
 8. Backchannel content (`run_add_bc`, 4th endpoint default port `8008`): fills each BC slot `content` (1-3 lowercase VI words, e.g. `ưm`, `à`, `vâng`), transcript unchanged.

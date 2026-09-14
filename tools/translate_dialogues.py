@@ -14,7 +14,7 @@ Usage (Gemini):
 
     python tools/translate_dialogues.py \
         --input_root outputs/generated_dialogues_with_tt \
-        --output_root outputs/vi_tt \
+        --output_root data/vi_tt \
         --model_name gemini-3.5-flash \
         --base_url https://generativelanguage.googleapis.com/v1beta/openai/ \
         --api_key $GEMINI_API_KEY

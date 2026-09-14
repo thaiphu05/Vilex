@@ -63,15 +63,12 @@ def test_readme_links_every_stage_doc(rel_path):
     assert rel_path.removeprefix("docs/") in README, f"README does not link {rel_path}"
 
 
+# Stages 1-5 are config-driven now (paths come from config.yaml, only --config
+# remains), so only the Stage 3 argparse entry points are checked here.
 INPUT_ROOT_ENTRY_POINTS = [
     "src/train_turntaking_hf.py",
     "src/inference_turntaking_hf.py",
     "src/inference_turntaking_llm.py",
-    # Stage 4 had the same defect, plus a default naming a Hub repo path that
-    # pointed at the annotations half rather than the dialogues Stage 4 reads:
-    # every dataset warned, was skipped, and the run exited 0.
-    "src/synthesis/run.py",
-    "src/synthesis/run_add_bc.py",
 ]
 
 
@@ -130,7 +127,10 @@ def test_stage3_documents_the_token_classifier_not_post_hoc_calibration():
 # the module the -m path names, which is not always a module named after the
 # package.
 DOCUMENTED_ENTRY_POINTS = {
+    "src.prepare_corpus": "src/prepare_corpus.py",
     "src.speechify_run": "src/speechify_run.py",
+    "src.cross_turn_slots": "src/cross_turn_slots.py",
+    "src.disfluency": "src/disfluency.py",
     "src.train_turntaking_hf": "src/train_turntaking_hf.py",
     "src.inference_turntaking_hf": "src/inference_turntaking_hf.py",
     "src.inference_turntaking_llm": "src/inference_turntaking_llm.py",

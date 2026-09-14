@@ -2,6 +2,8 @@ import pathlib
 
 import pytest
 
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
 
 def _load_module():
     """Load list_librispeech_speakers without importing convert_spoken.
@@ -10,7 +12,7 @@ def _load_module():
     whisperx/nemo, so it cannot be imported in a unit test. We exec only the
     function under test from source.
     """
-    src = pathlib.Path(__file__).with_name("convert_spoken.py").read_text()
+    src = (REPO / "tts_render" / "convert_spoken.py").read_text()
     start = src.index("def list_librispeech_speakers")
     end = src.index("def sample_librispeech_prompt")
     ns = {"os": __import__("os"), "glob": __import__("glob").glob}

@@ -12,7 +12,12 @@ __pycache__/
 venv/
 .venv-tts/
 
-# Pipeline outputs / local data
+# Personal pipeline config (commit config_example.yaml instead)
+/config.yaml
+
+# All local data/outputs (raw corpora, results, rendered audio, logs)
+data/
+# Pipeline outputs / local data (legacy locations, kept for compatibility)
 outputs/
 output/
 results/

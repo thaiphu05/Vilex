@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Any
 from tqdm import tqdm
 
+from src.config import cfg_get, load_config
 from src.llm_client import make_client, no_thinking_extra_body
 
 # ================================
@@ -107,13 +108,20 @@ Quy tắc:
 FALLBACK_BC_VI = ["ừ", "à", "vâng", "phải", "ồ"]
 FALLBACK_BC_EN = ["mhm", "yeah", "right", "okay", "oh"]
 
+# Configurable at runtime from config.yaml (stage4b_backchannel.*).
+BC_MAX_TOKENS = 32
+BC_TEMPERATURE = 0.7
+BC_MAX_RETRIES = 2
+VALID_MAX_WORDS = 3
+MAX_FILE_ATTEMPTS = 3
+
 
 def _is_valid_backchannel(text: str) -> bool:
     """Reject empty/garbage/explanation-like LLM outputs."""
     if not text:
         return False
     words = text.split()
-    if len(words) < 1 or len(words) > 3:
+    if len(words) < 1 or len(words) > VALID_MAX_WORDS:
         return False
     lowered = text.lower()
     # explanations / labels instead of the actual backchannel
@@ -138,11 +146,16 @@ def _build_messages(context: str):
     ]
 
 
-def generate_backchannel(context: str, max_retries: int = 2) -> str:
+def generate_backchannel(context: str, max_retries: int = None) -> str:
+    if max_retries is None:
+        max_retries = BC_MAX_RETRIES
     fallback_pool = FALLBACK_BC_VI if TARGET_LANGUAGE == "vi" else FALLBACK_BC_EN
     fallback = random.choice(fallback_pool)
     kwargs = dict(
-        model=MODEL_NAME, messages=_build_messages(context), temperature=0.7, max_tokens=32
+        model=MODEL_NAME,
+        messages=_build_messages(context),
+        temperature=BC_TEMPERATURE,
+        max_tokens=BC_MAX_TOKENS,
     )
     # Disable thinking for reasoning models. For Gemini we emit a marker that
     # gemini_client.py consumes as types.ThinkingConfig(thinking_budget=0).
@@ -222,50 +235,99 @@ def collect_files(dataset=None, split=None):
 # ================================
 # Entry point
 # ================================
-def main(dataset=None, split=None):
-    files = collect_files(dataset, split)
-    if not files:
+def configure(cfg):
+    """Resolve the module-level knobs from config.yaml."""
+    global MODEL_NAME, BASE_URL, API_KEY, PROMPT_KIND, TARGET_LANGUAGE
+    global INPUT_ROOT, OUTPUT_ROOT, client
+    global FALLBACK_BC_VI, FALLBACK_BC_EN
+    global BC_MAX_TOKENS, BC_TEMPERATURE, BC_MAX_RETRIES, VALID_MAX_WORDS, MAX_FILE_ATTEMPTS
+
+    llm = cfg_get(cfg, "llm", {})
+    s4b = cfg_get(cfg, "stage4b_backchannel", {})
+    paths = cfg_get(cfg, "paths", {})
+
+    MODEL_NAME = llm.get("bc_model", MODEL_NAME)
+    BASE_URL = llm.get("bc_base_url", BASE_URL)
+    API_KEY = llm.get("api_key", API_KEY)
+    PROMPT_KIND = s4b.get("prompt_kind", PROMPT_KIND)
+    TARGET_LANGUAGE = cfg_get(cfg, "run.target_language", TARGET_LANGUAGE)
+
+    BC_MAX_TOKENS = s4b.get("max_tokens", BC_MAX_TOKENS)
+    BC_TEMPERATURE = s4b.get("temperature", BC_TEMPERATURE)
+    BC_MAX_RETRIES = s4b.get("max_retries", BC_MAX_RETRIES)
+    VALID_MAX_WORDS = s4b.get("valid_max_words", VALID_MAX_WORDS)
+    MAX_FILE_ATTEMPTS = s4b.get("max_file_attempts", MAX_FILE_ATTEMPTS)
+    fallback = s4b.get("fallback", {})
+    if isinstance(fallback, dict):
+        if fallback.get("vi"):
+            FALLBACK_BC_VI = fallback["vi"]
+        if fallback.get("en"):
+            FALLBACK_BC_EN = fallback["en"]
+
+    INPUT_ROOT = Path(paths.get("synthesis_root", "data/vi_tt"))
+    OUTPUT_ROOT = Path(paths.get("bc_root", "data/vi_tt_bc"))
+    client = make_client(MODEL_NAME, API_KEY, BASE_URL)
+
+
+def main(config_path=None):
+    cfg = load_config(config_path)
+    configure(cfg)
+
+    datasets = cfg_get(cfg, "run.datasets", [])
+    splits = cfg_get(cfg, "run.splits", ["train"])
+    total = 0
+
+    for dataset in datasets:
+        for split in splits:
+            files = collect_files(dataset, split)
+            if not files:
+                continue
+            total += len(files)
+            for in_path in tqdm(files, desc=f"Adding backchannels [{dataset}/{split}]"):
+                rel_path = in_path.relative_to(INPUT_ROOT)
+                out_path = OUTPUT_ROOT / rel_path
+                if out_path.exists():
+                    continue
+
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Defensive: a truncated/empty input (e.g. a write interrupted by
+                # a disk-quota error) must not abort the whole stage; skip it.
+                try:
+                    with open(in_path, "r", encoding="utf-8") as f:
+                        dialogue = json.load(f)
+                except (json.JSONDecodeError, OSError) as exc:
+                    print(f"\n[run_add_bc] SKIP unreadable input {in_path.name}: {exc}")
+                    continue
+
+                # A single malformed/empty LLM reply must not abort the whole
+                # stage. Retry a few times, then skip the dialogue as lost.
+                processed = None
+                for attempt in range(MAX_FILE_ATTEMPTS):
+                    try:
+                        processed = process_dialogue(dialogue)
+                        break
+                    except Exception as exc:
+                        print(
+                            f"\n[run_add_bc] WARN {in_path.name} attempt "
+                            f"{attempt + 1}/{MAX_FILE_ATTEMPTS} failed: {exc}"
+                        )
+                if processed is None:
+                    print(
+                        f"[run_add_bc] SKIP {in_path.name} after {MAX_FILE_ATTEMPTS} "
+                        f"failed attempts (no bc added)"
+                    )
+                    continue
+
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(processed, f, indent=2, ensure_ascii=False)
+
+    if total == 0:
         raise SystemExit(
-            f"No dialogues under {INPUT_ROOT}. --input_root must contain "
-            f"text_dialogue_<dataset>/<split>/*.json, i.e. the --save_root of "
+            f"No dialogues under {INPUT_ROOT}. The config's paths.synthesis_root must "
+            f"contain text_dialogue_<dataset>/<split>/*.json, i.e. the output of "
             f"`python -m src.synthesis.run`."
         )
-
-    for in_path in tqdm(files, desc="Adding backchannels"):
-        rel_path = in_path.relative_to(INPUT_ROOT)
-        out_path = OUTPUT_ROOT / rel_path
-
-        # Skip if already processed
-        if out_path.exists():
-            continue
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Defensive: a truncated/empty STAGE-1 input (e.g. a write interrupted by
-        # a disk-quota error) must not abort the whole stage; skip it.
-        try:
-            with open(in_path, "r", encoding="utf-8") as f:
-                dialogue = json.load(f)
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"\n[run_add_bc] SKIP unreadable input {in_path.name}: {exc}")
-            continue
-
-        # A single malformed/empty LLM reply (e.g. JSONDecodeError inside
-        # process_dialogue) must not abort the whole stage. Retry a few times
-        # (transient 122B hiccups), then skip the dialogue as acceptable loss.
-        processed = None
-        for attempt in range(3):
-            try:
-                processed = process_dialogue(dialogue)
-                break
-            except Exception as exc:
-                print(f"\n[run_add_bc] WARN {in_path.name} attempt {attempt+1}/3 failed: {exc}")
-        if processed is None:
-            print(f"[run_add_bc] SKIP {in_path.name} after 3 failed attempts (no bc added)")
-            continue
-
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(processed, f, indent=2, ensure_ascii=False)
 
 
 # ================================
@@ -274,42 +336,7 @@ def main(dataset=None, split=None):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset")
-    parser.add_argument("--split")
-    parser.add_argument("--input_root", type=Path, required=True)
-    parser.add_argument("--output_root", type=Path, required=True)
-    parser.add_argument("--model_name", default=MODEL_NAME, help="default Qwen/Qwen3-14B (local)")
-    parser.add_argument(
-        "--base_url", default=BASE_URL, help="vLLM OpenAI endpoint (ignored for gpt-* models)"
-    )
-    parser.add_argument("--api_key", default=API_KEY)
-    parser.add_argument(
-        "--prompt",
-        choices=["qwen", "legacy"],
-        default=PROMPT_KIND,
-        help="qwen=new engineered prompt; legacy=original gpt prompt",
-    )
-    parser.add_argument(
-        "--target_language",
-        type=str,
-        default="vi",
-        choices=["en", "vi"],
-        help="Backchannel output language. 'vi' uses the Vietnamese backchannel prompt. (default: %(default)s) Use --target_language en for English.",
-    )
-
-    args = parser.parse_args()
-
-    MODEL_NAME = args.model_name
-    PROMPT_KIND = args.prompt
-    TARGET_LANGUAGE = args.target_language
-    client = make_client(MODEL_NAME, args.api_key, args.base_url)
-
-    INPUT_ROOT = args.input_root
-    OUTPUT_ROOT = args.output_root
-
-    main(
-        dataset=args.dataset,
-        split=args.split,
-    )
+    _ap = argparse.ArgumentParser(description="Add backchannels (Stage 4b).")
+    _ap.add_argument("--config", default=None, help="Path to config.yaml")
+    main(_ap.parse_args().config)
 # ================================

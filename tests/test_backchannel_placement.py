@@ -2,6 +2,8 @@ import pathlib
 
 import pytest
 
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
 torch = pytest.importorskip("torch")
 np = pytest.importorskip("numpy")
 
@@ -13,7 +15,7 @@ def _load_placement():
     whisperx/nemo, so it cannot be imported in a unit test. We exec only the
     functions under test from source.
     """
-    src = pathlib.Path(__file__).with_name("convert_spoken.py").read_text()
+    src = (REPO / "tts_render" / "convert_spoken.py").read_text()
     start = src.index("def generate_delay")
     end = src.index("def aggregate_speech")
     ns = {"np": np, "torch": torch, "F": torch.nn.functional, "TARGET_SR": 24000}

@@ -10,16 +10,16 @@ Pipeline reads 6 upstream text-dialogue corpora, converts them through 6 stages 
 
 | # | Corpus | Code | Source | License | Local path | Download |
 |---|---|---|---|---|---|---|
-| 1 | Interviewer | INT | HF `Anthropic/AnthropicInterviewer` | CC-BY-4.0 | `data_raw/interviewer/` | `datasets.load_dataset()` |
-| 2 | MultiWOZ 2.2 | PLN | `budzianowski/multiwoz` | MIT | `data_raw/multiwoz/` | git clone |
-| 3 | CraigslistBargain | NEG | `aladar/craigslist_bargains` (adapted) | MIT | `data_raw/CraigslistBargain/` | adapter script |
-| 4 | SocraticLM (SocraTeach) | TEA | `SocraticLM/SocraTeach` | Apache-2.0 | `data_raw/SocraticLM/` | git clone |
-| 5 | DailyPersuasion | PER | DailyPersuasion (PersuGPT) | Apache-2.0 | `data_raw/persuader/` | zip→JSON |
+| 1 | Interviewer | INT | HF `Anthropic/AnthropicInterviewer` | CC-BY-4.0 | `data/raw/interviewer/` | `datasets.load_dataset()` |
+| 2 | MultiWOZ 2.2 | PLN | `budzianowski/multiwoz` | MIT | `data/raw/multiwoz/` | git clone |
+| 3 | CraigslistBargain | NEG | `aladar/craigslist_bargains` (adapted) | MIT | `data/raw/CraigslistBargain/` | adapter script |
+| 4 | SocraticLM (SocraTeach) | TEA | `SocraticLM/SocraTeach` | Apache-2.0 | `data/raw/SocraticLM/` | git clone |
+| 5 | DailyPersuasion | PER | DailyPersuasion (PersuGPT) | Apache-2.0 | `data/raw/persuader/` | zip→JSON |
 | 6 | SODA | SOC | HF `allenai/soda` | CC-BY-4.0 | HF streaming (no local cache) | auto-streamed |
 
 ### 1.2 Dialogue Counts
 
-**Raw data** (what's in `data_raw/`):
+**Raw data** (what's in `data/raw/`):
 
 | Corpus | Split | Files | Dialogue count | Notes |
 |---|---|---|---|---|
@@ -96,7 +96,7 @@ Stage 1 uses `--max_variants 1` (default) for SocraticLM and Persuader — picks
 | **5 tractable total** | | **39,933** | |
 | SODA | SOC | 1,340,550 | competitive-filtered |
 
-> **SODA not in `data_raw/`:** SODA is auto-streamed from HF at Stage-1 runtime (no local download). The pipeline calls `load_dataset('allenai/soda', streaming=True)` and processes rows on-the-fly. This avoids downloading ~1.3M dialogues (~2 GB parquet). SODA dialogues go through `is_competitive_scenario` LLM filter before conversion.
+> **SODA not in `data/raw/`:** SODA is auto-streamed from HF at Stage-1 runtime (no local download). The pipeline calls `load_dataset('allenai/soda', streaming=True)` and processes rows on-the-fly. This avoids downloading ~1.3M dialogues (~2 GB parquet). SODA dialogues go through `is_competitive_scenario` LLM filter before conversion.
 
 ### 1.5 Turn Statistics
 
@@ -127,17 +127,17 @@ SODA excluded — 1.3M dialogues, streaming-only, turn stats impractical to comp
 
 | Item | Size | Location |
 |---|---|---|
-| `data_raw/` (all 6 source corpora) | **932 MB** | gitignored |
-| Interviewer (3 JSONs) | ~12 MB | `data_raw/interviewer/` |
-| MultiWOZ 2.2 | ~288 MB | `data_raw/multiwoz/data/MultiWOZ_2.2/` |
-| CraigslistBargain | ~50 MB | `data_raw/CraigslistBargain/` |
-| SocraticLM (multi + single) | ~119 MB | `data_raw/SocraticLM/data/` |
-| Persuader | ~360 MB | `data_raw/persuader/` |
+| `data/raw/` (all 6 source corpora) | **932 MB** | gitignored |
+| Interviewer (3 JSONs) | ~12 MB | `data/raw/interviewer/` |
+| MultiWOZ 2.2 | ~288 MB | `data/raw/multiwoz/data/MultiWOZ_2.2/` |
+| CraigslistBargain | ~50 MB | `data/raw/CraigslistBargain/` |
+| SocraticLM (multi + single) | ~119 MB | `data/raw/SocraticLM/data/` |
+| Persuader | ~360 MB | `data/raw/persuader/` |
 | SODA (parquet, if materialized) | ~231 MB | HF cache |
 
 ### 1.7 Leftover Zip Files
 
-All under `data_raw/` (gitignored). Safe to delete:
+All under `data/raw/` (gitignored). Safe to delete:
 
 | Zip | Size | Notes |
 |---|---|---|
@@ -155,13 +155,13 @@ Note: `DailyPersuasion.zip` was previously present (69 MB) but has been deleted 
 Source data flows through 6 stages. Each stage reads from the previous stage's output directory.
 
 ```
-data_raw/                    (upstream source corpora)
+data/raw/                    (upstream source corpora)
     │
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 1: speechify_run.py                          │
-│  Input:  data_raw/<corpus>/                          │
-│  Output: results_vi/text_dialogue_<dataset>/{split}/ │
+│  Input:  data/raw/<corpus>/                          │
+│  Output: data/results_vi/text_dialogue_<dataset>/{split}/ │
 │  LLM:    1 call/dialogue (spoken-style conversion)   │
 │  What:   Text dialogue → spoken Vietnamese dialogue  │
 └─────────────────────────────────────────────────────┘
@@ -169,8 +169,8 @@ data_raw/                    (upstream source corpora)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 1.5: cross_turn_slots.py                     │
-│  Input:  results_vi/                                │
-│  Output: results_vi_xt/ (same layout)               │
+│  Input:  data/results_vi/                                │
+│  Output: data/results_vi_xt/ (same layout)               │
 │  LLM:    0 calls (rule-based)                       │
 │  What:   Detect cross-turn dictation slots,         │
 │          inject misspeak-repair patterns             │
@@ -179,8 +179,8 @@ data_raw/                    (upstream source corpora)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 1.75: disfluency.py                          │
-│  Input:  results_vi_xt/                             │
-│  Output: results_vi_dis/ (same layout)              │
+│  Input:  data/results_vi_xt/                             │
+│  Output: data/results_vi_dis/ (same layout)              │
 │  LLM:    0 calls (rule-based)                       │
 │  What:   Inject FP/DM/EDIT/REP/COR/RST disfluency  │
 │          (Switchboard/Shriberg taxonomy)             │
@@ -189,8 +189,8 @@ data_raw/                    (upstream source corpora)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 4: synthesis/run.py                          │
-│  Input:  results_vi_dis/                            │
-│  Output: outputs/vi_tt/                             │
+│  Input:  data/results_vi_dis/                            │
+│  Output: data/vi_tt/                             │
 │  LLM:    ~100 calls/dialogue                        │
 │          Writer (~20) + Boundary (~10) + TT (~40)   │
 │          + Done check (~20) + retries                │
@@ -202,8 +202,8 @@ data_raw/                    (upstream source corpora)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 4b: synthesis/run_add_bc.py                  │
-│  Input:  outputs/vi_tt/                             │
-│  Output: outputs/vi_tt_bc/                          │
+│  Input:  data/vi_tt/                             │
+│  Output: data/vi_tt_bc/                          │
 │  LLM:    ~10 calls/dialogue                         │
 │  What:   Generate backchannel text for [INSERT]     │
 │          points (1-3 word listener responses)        │
@@ -212,7 +212,7 @@ data_raw/                    (upstream source corpora)
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Stage 5: tts_render/convert_spoken.py              │
-│  Input:  outputs/vi_tt_bc/                          │
+│  Input:  data/vi_tt_bc/                          │
 │  Output: outputs/audios/ (2-channel WAV)            │
 │  LLM:    0 calls (OmniVoice/Chatterbox TTS)        │
 │  What:   Render dialogue to audio with voice-clone  │
@@ -224,20 +224,20 @@ data_raw/                    (upstream source corpora)
 
 | Stage | Input dir | Output dir | LLM calls | What changes |
 |---|---|---|---|---|
-| 1 | `data_raw/` | `results_vi/` | 1/dialogue | Text → spoken Vietnamese |
-| 1.5 | `results_vi/` | `results_vi_xt/` | 0 | Cross-turn slots + misspeak repair |
-| 1.75 | `results_vi_xt/` | `results_vi_dis/` | 0 | Disfluency injection |
-| 4 | `results_vi_dis/` | `outputs/vi_tt/` | ~100/dialogue | Turn-taking generation |
-| 4b | `outputs/vi_tt/` | `outputs/vi_tt_bc/` | ~10/dialogue | Backchannel text |
-| 5 | `outputs/vi_tt_bc/` | `outputs/audios/` | 0 | TTS audio rendering |
+| 1 | `data/raw/` | `data/results_vi/` | 1/dialogue | Text → spoken Vietnamese |
+| 1.5 | `data/results_vi/` | `data/results_vi_xt/` | 0 | Cross-turn slots + misspeak repair |
+| 1.75 | `data/results_vi_xt/` | `data/results_vi_dis/` | 0 | Disfluency injection |
+| 4 | `data/results_vi_dis/` | `data/vi_tt/` | ~100/dialogue | Turn-taking generation |
+| 4b | `data/vi_tt/` | `data/vi_tt_bc/` | ~10/dialogue | Backchannel text |
+| 5 | `data/vi_tt_bc/` | `outputs/audios/` | 0 | TTS audio rendering |
 
-> **Critical:** Stage 4 reads from `results_vi_dis/` (not `results_vi/`). Feeding the wrong directory → silent failure.
+> **Critical:** Stage 4 reads from `data/results_vi_dis/` (not `data/results_vi/`). Feeding the wrong directory → silent failure.
 
 ---
 
 ## 3. Output Schemas
 
-### 3.1 Stage 1 Output (`results_vi/text_dialogue_<dataset>/{split}/*.json`)
+### 3.1 Stage 1 Output (`data/results_vi/text_dialogue_<dataset>/{split}/*.json`)
 
 One JSON file per dialogue:
 
@@ -289,7 +289,7 @@ Same schema as Stage 1. Cross-turn slots and disfluency markers are injected int
 }
 ```
 
-### 3.3 Stage 4 Output (`outputs/vi_tt/text_dialogue_<dataset>/{split}/*.json`)
+### 3.3 Stage 4 Output (`data/vi_tt/text_dialogue_<dataset>/{split}/*.json`)
 
 Turn-taking dialogue with per-word boundary decisions:
 
@@ -340,7 +340,7 @@ Turn-taking dialogue with per-word boundary decisions:
 
 `segments` interleaves plain-text spans with per-word turn-taking decision slots. `probs` = LLM-predicted probabilities. `decision` = sampled action.
 
-### 3.4 Stage 4b Output (`outputs/vi_tt_bc/`)
+### 3.4 Stage 4b Output (`data/vi_tt_bc/`)
 
 Same as Stage 4, but `[BACKCHANNEL]` tokens replaced with generated text:
 
@@ -481,17 +481,17 @@ The docstring states COR (correction) and RST (restart) are "LLM-based (Gemini),
 python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # MultiWOZ
-git clone https://github.com/budzianowski/multiwoz.git data_raw/multiwoz
+git clone https://github.com/budzianowski/multiwoz.git data/raw/multiwoz
 
 # SocraticLM
-git clone https://github.com/SocraticLM/SocraTeach.git data_raw/SocraticLM
+git clone https://github.com/SocraticLM/SocraTeach.git data/raw/SocraticLM
 
 # CraigslistBargain (adapt from HF)
 .venv/bin/pip install datasets
 # Use adapter script to convert HF → cocoa format
 
 # DailyPersuasion
-# Download DailyPersuasion_full_version.zip → unzip to data_raw/persuader/
+# Download DailyPersuasion_full_version.zip → unzip to data/raw/persuader/
 
 # Interviewer + SODA
 # Auto-streamed from HF at Stage-1 runtime (no manual download needed)
@@ -503,10 +503,10 @@ git clone https://github.com/SocraticLM/SocraTeach.git data_raw/SocraticLM
 
 All pipeline outputs and source data are gitignored:
 
-- `data_raw/` — upstream source corpora
-- `results/`, `results_vi/`, `results_vi_xt/`, `results_vi_dis/` — Stages 1→1.75
+- `data/raw/` — upstream source corpora
+- `results/`, `data/results_vi/`, `data/results_vi_xt/`, `data/results_vi_dis/` — Stages 1→1.75
 - `outputs/`, `output/` — Stages 4→5
-- `parsed_source/` — test-parse dumps
+- `data/results_vi/parsed_source/` — test-parse dumps (under `paths.results_root`)
 - `text_dialogue_*/**/*.json` — generated dialogue JSON
 - `Sample/` — Stage 5 audio output
 

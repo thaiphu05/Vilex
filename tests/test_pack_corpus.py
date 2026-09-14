@@ -1,5 +1,10 @@
-import pack_corpus as pc
-import unpack_corpus as uc
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+
+import pack_corpus as pc  # noqa: E402
+import unpack_corpus as uc  # noqa: E402
 
 
 def test_pack_dialogue_keeps_nested_slots_and_stamps_meta():

@@ -1,5 +1,5 @@
 """Tests for cross_turn_slots module. 0 API calls."""
-import json
+
 import random
 import sys
 from pathlib import Path
@@ -7,8 +7,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
 from src.cross_turn_slots import (
-    _segment, _vocalize_segment, _corrupt_segment, _inject_slots_in_turn,
-    _build_dictation_turns, _process_dialogue,
+    _segment,
+    _vocalize_segment,
+    _corrupt_segment,
+    _inject_slots_in_turn,
+    _build_dictation_turns,
+    _process_dialogue,
 )
 
 
@@ -51,12 +55,15 @@ class TestCorruption:
     def test_corrupt_deterministic(self):
         rng1 = random.Random(42)
         rng2 = random.Random(42)
-        assert _corrupt_segment("0901", "numeric", rng1) == _corrupt_segment("0901", "numeric", rng2)
+        assert _corrupt_segment("0901", "numeric", rng1) == _corrupt_segment(
+            "0901", "numeric", rng2
+        )
 
 
 class TestTemplates:
     def test_vi_templates(self):
         from src.cross_turn_slots import _TEMPLATES
+
         assert len(_TEMPLATES["vi"]["ack_short"]) > 0
         assert len(_TEMPLATES["vi"]["ack_final"]) > 0
         assert "Khoan" in _TEMPLATES["vi"]["self_correct"]
@@ -64,6 +71,7 @@ class TestTemplates:
 
     def test_en_templates(self):
         from src.cross_turn_slots import _TEMPLATES
+
         assert len(_TEMPLATES["en"]["ack_short"]) > 0
         assert "Wait" in _TEMPLATES["en"]["self_correct"]
 
@@ -78,11 +86,17 @@ class TestDictation:
         rng = random.Random(42)
         turns, meta = _build_dictation_turns("0901234567", "numeric", rng, "vi", "user", 0.20)
         assert len(turns) >= 3
-        assert any("đọc tiếp" in t["content"] or "tiếp đi" in t["content"] for t in turns if t["role"] == "assistant")
+        assert any(
+            "đọc tiếp" in t["content"] or "tiếp đi" in t["content"]
+            for t in turns
+            if t["role"] == "assistant"
+        )
 
     def test_error_repair_structure(self):
         rng = random.Random(42)
-        turns, meta = _build_dictation_turns("0901234567", "numeric", rng, "vi", "user", 1.0)  # force error
+        turns, meta = _build_dictation_turns(
+            "0901234567", "numeric", rng, "vi", "user", 1.0
+        )  # force error
         contents = [t["content"] for t in turns]
         has_self_correct = any("Khoan" in c or "Wait" in c for c in contents)
         has_ack_correct = any("rồi" in c or "Got it" in c for c in contents)

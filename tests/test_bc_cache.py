@@ -1,4 +1,9 @@
-import bc_cache
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tts_render"))
+
+import bc_cache  # noqa: E402
 
 
 def test_normalize_strips_edge_punctuation_and_casefolds():

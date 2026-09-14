@@ -70,34 +70,36 @@ Defaults are now Vietnamese: `--target_language vi`, `--tts_backend omnivoice`, 
 
 ## Quickstart (Vietnamese, default)
 
+All parameters live in **`config.yaml`** at the repo root (models, paths, datasets,
+timing, tags, ...). A committed sample is `config_example.yaml`; `config.yaml`
+itself is gitignored, so copy it once:
+
+```bash
+cp config_example.yaml config.yaml
+```
+
+Each stage reads it and takes only an optional `--config PATH`. See
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ```bash
 export GEMINI_API_KEY=...  # or GEMINI_CREDENTIALS=./project-name-*.json (Vertex AI)
 
-# Stage 1 — convert source dialogues to spoken Vietnamese (default vi, no flag needed)
-.venv/bin/python -m src.speechify_run \
-  --dataset interviewer --save_dir results_vi/ --llm_model_name gemini-3.6-flash
+# Stage 1 — convert source dialogues to spoken Vietnamese (default vi)
+.venv/bin/python -m src.speechify_run
 
-# Stage 2+4 — detect slots AND generate dialogues with turn-taking in one pass (default vi)
+# Stage 2+4 — detect slots AND generate dialogues with turn-taking in one pass
 # (Stage 2 slot detection runs inside the same synthesis entry point)
-.venv/bin/python -m src.synthesis.run \
-  --dataset interviewer --split train \
-  --input_root results_vi/ \
-  --save_root outputs/vi_tt \
-  --llm_model_name gemini-3.5-flash --boundary_model_name gemini-3.5-flash \
-  --tt_model_name gemini-3.5-flash
+.venv/bin/python -m src.synthesis.run
 
-# Stage 4 (cont.) — add backchannel text (default vi)
-.venv/bin/python -m src.synthesis.run_add_bc \
-  --input_root outputs/vi_tt --output_root outputs/vi_tt_bc \
-  --model_name gemini-3.5-flash
+# Stage 4 (cont.) — add backchannel text
+.venv/bin/python -m src.synthesis.run_add_bc
 
-# Stage 5 — render to two-channel audio with OmniVoice (default vi+omnivoice),
-# picking 2 distinct voices from the voice pool per dialogue
-python tts_render/convert_spoken.py \
-  --input_glob 'outputs/vi_tt_bc/**/*.json' \
-  --save_dir outputs/audios_omnivoice \
-  --omnivoice_voice_pool "voice_clone" \
-  --num_variants 1 --device cpu
+# Stage 5 — render to two-channel audio with OmniVoice, picking 2 distinct
+# voices from the voice pool per dialogue
+python tts_render/convert_spoken.py
+
+# Override any key without editing the file, e.g. run only the interviewer set:
+VILEX_RUN__DATASETS='[interviewer]' .venv/bin/python -m src.synthesis.run
 ```
 
 **Stage 3 — train the turn-taking predictor** (optional: the pipeline above falls back to the LLM predictor configured via `--tt_model_name`). Run this separately to train the HF LoRA predictor:
@@ -113,16 +115,19 @@ Full pipeline in one command: `./run_vi_pipeline.sh` (see file header for option
 
 ## English legacy (Chatterbox)
 
+Edit `config.yaml` (or override via `VILEX_*`) to switch models/language, e.g.
+`VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_TTS__BACKEND=chatterbox`:
+
 ```bash
-.venv/bin/python -m src.speechify_run --dataset interviewer --save_dir results/ --llm_model_name gpt-4.1 --target_language en
-.venv/bin/python -m src.synthesis.run --dataset interviewer --split train --input_root data-dialogues/ --save_root outputs/en_tt --llm_model_name gpt-4.1 --boundary_model_name gpt-4.1-mini --tt_model_name gpt-4.1 --target_language en
-.venv/bin/python -m src.synthesis.run_add_bc --input_root outputs/en_tt --output_root outputs/en_tt_bc --model_name gpt-4.1 --target_language en
-.venv-tts/bin/python tts_render/convert_spoken.py --tts_backend chatterbox --language en --input_glob 'outputs/en_tt_bc/**/*.json' --save_dir outputs/audios_chatterbox --num_variants 10
+.venv/bin/python -m src.speechify_run
+.venv/bin/python -m src.synthesis.run
+.venv/bin/python -m src.synthesis.run_add_bc
+.venv-tts/bin/python tts_render/convert_spoken.py
 ```
 
 ## Data
 
-6 upstream source datasets downloaded locally in `data_raw/`. Pipeline reads `data-annotations/` and `data-dialogues/` (`text_dialogue_<dataset>/<split>/*.json`) produced by Stage 1 or `tools/unpack_corpus.py`. See `docs/CORPUS.md` for data flow, schemas, and counts.
+6 upstream source datasets downloaded locally in `data/raw/`. Pipeline reads `data-annotations/` and `data-dialogues/` (`text_dialogue_<dataset>/<split>/*.json`) produced by Stage 1 or `tools/unpack_corpus.py`. See `docs/CORPUS.md` for data flow, schemas, and counts.
 
 ## License
 

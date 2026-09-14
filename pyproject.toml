@@ -59,4 +59,4 @@ line-length = 100
 exclude = ["vilex/tts/chatterbox"]
 
 [tool.pytest.ini_options]
-testpaths = ["tools"]
+testpaths = ["tests"]

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from tqdm import tqdm
 from openai import OpenAI
 
+from src.config import cfg_get, load_config
 from src.llm_client import make_client
 from src.speechify_datasets import (
     iter_negotiator,
@@ -285,110 +286,54 @@ def process_dataset(dataset_name: str, args, client: Optional[OpenAI]):
             write_json(out_path, result)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Convert text dialogues to speech-friendly dialogues."
+def _build_args(cfg, split_label):
+    """Adapt the config into the lightweight Namespace ``process_dataset`` reads."""
+    from types import SimpleNamespace
+
+    s1 = cfg_get(cfg, "stage1_speechify", {})
+    llm = cfg_get(cfg, "llm", {})
+    paths = cfg_get(cfg, "paths", {})
+    return SimpleNamespace(
+        data_root=paths.get("data_root") or None,
+        input_path=paths.get("input_path") or None,
+        save_dir=paths.get("results_root", "data/results_vi"),
+        split=split_label,
+        max_train_samples=s1.get("max_train_samples", DEFAULT_SAMPLES_PER_SPLIT),
+        max_test_samples=s1.get("max_test_samples", DEFAULT_SAMPLES_PER_SPLIT),
+        max_variants=s1.get("max_variants", 1),
+        interviewer_subset=s1.get("interviewer_subset", "workforce"),
+        llm_model_name=llm.get("writer_model", "gemini-3.6-flash"),
+        target_language=cfg_get(cfg, "run.target_language", "vi"),
+        temperature=s1.get("temperature", llm.get("temperature", 0.7)),
+        api_key=llm.get("api_key", "EMPTY"),
+        base_url=llm.get("base_url", "http://localhost:8000/v1"),
+        concise=bool(s1.get("concise", False)),
+        test_parse=bool(cfg_get(cfg, "run.test_parse", False)),
     )
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        type=str,
-        choices=DATASET_CHOICES + ["all"],
-        required=True,
-        help="Scenario to convert, or 'all' for every one of them.",
-    )
-    parser.add_argument(
-        "--data-root",
-        "--data_root",
-        type=str,
-        default=None,
-        help="Root dir containing the raw third-party dataset copies "
-        "(multiwoz/, CraigslistBargain/, SocraticLM/). These are "
-        "third-party datasets not redistributed in this repo -- "
-        "download them yourself (see README) and point --data-root "
-        "at the directory that contains them. Not needed for "
-        "--dataset interviewer/soda (load from the Hugging Face Hub) "
-        "or persuader (pass --input_path directly instead).",
-    )
-    parser.add_argument(
-        "--input_path",
-        type=str,
-        default=None,
-        help="Path to a single-file corpus, overriding --data-root. Required "
-        "for persuader; optional for socraticlm.",
-    )
-    parser.add_argument("--save_dir", type=str, default="results/")
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="all",
-        choices=["train", "test", "all"],
-        help="Which split(s) to convert. Default 'all' converts both train and "
-        "test. Use 'train' to limit API usage (e.g. on free-tier quotas).",
-    )
-    parser.add_argument(
-        "--max_train_samples",
-        type=int,
-        default=DEFAULT_SAMPLES_PER_SPLIT,
-        help="Dialogues to convert for the train split, sampled at even "
-        "spacing across the source. 0 converts every one of them. "
-        "Each dialogue costs one LLM call. (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--max_test_samples",
-        type=int,
-        default=DEFAULT_SAMPLES_PER_SPLIT,
-        help="Same, for the test split. 0 converts every one of them. " "(default: %(default)s)",
-    )
-    parser.add_argument(
-        "--max_variants",
-        type=int,
-        default=1,
-        help="Dialogue variants to keep per source record, for the corpora "
-        "that ship several retellings of one scenario (socraticlm, "
-        "persuader). (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--interviewer_subset",
-        type=str,
-        default="workforce",
-        help="Which Anthropic Interviewer subset to convert. (default: %(default)s)",
-    )
-    parser.add_argument("--llm_model_name", type=str, default="gpt-4.1")
-    parser.add_argument(
-        "--target_language",
-        type=str,
-        default="vi",
-        choices=["en", "vi"],
-        help="Output language. 'vi' makes the LLM translate the source into spoken Vietnamese while keeping prompts in English. (default: %(default)s) Use --target_language en for English.",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.7,
-        help="Sampling temperature for the conversion. (default: %(default)s)",
-    )
-    parser.add_argument("--api_key", type=str, default="EMPTY")
-    parser.add_argument("--base_url", type=str, default="http://localhost:8000/v1")
-    parser.add_argument("--concise", action="store_true", default=False)
-    parser.add_argument(
-        "--test-parse",
-        "--test_parse",
-        action="store_true",
-        default=False,
-        help="Parse and dump the source dialogues without calling the LLM.",
-    )
-    args = parser.parse_args()
+
+
+def main(config_path=None):
+    cfg = load_config(config_path)
+
+    splits = list(cfg_get(cfg, "run.splits", ["train", "test"]))
+    split_label = "all" if set(splits) >= {"train", "test"} else (splits[0] if splits else "all")
+
+    datasets_to_run = cfg_get(cfg, "run.datasets", ["interviewer"])
+    args = _build_args(cfg, split_label)
 
     client = None
     if not args.test_parse:
         client = make_client(args.llm_model_name, args.api_key, args.base_url)
-
-    datasets_to_run = DATASET_CHOICES if args.dataset == "all" else [args.dataset]
 
     for ds_name in datasets_to_run:
         process_dataset(ds_name, args, client)
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    _ap = argparse.ArgumentParser(
+        description="Convert text dialogues to speech-friendly dialogues."
+    )
+    _ap.add_argument("--config", default=None, help="Path to config.yaml")
+    main(_ap.parse_args().config)

@@ -9,10 +9,11 @@ import random
 import re
 import sys
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
+from src.config import cfg_get, load_config  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Detection
@@ -20,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
 _RE_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _RE_PHONE_VN = re.compile(
-    r"(?:\+84|84)[\s.-]?\d{3}[\s.-]?\d{3}[\s.-]?\d{3}"   # +84 xxx xxx xxx
-    r"|0\d{9}"                                             # 0xxxxxxxxx
-    r"|\(\d{3,4}\)[\s.-]?\d{3}[\s.-]?\d{3,4}"             # (xxx) xxx-xxxx
+    r"(?:\+84|84)[\s.-]?\d{3}[\s.-]?\d{3}[\s.-]?\d{3}"  # +84 xxx xxx xxx
+    r"|0\d{9}"  # 0xxxxxxxxx
+    r"|\(\d{3,4}\)[\s.-]?\d{3}[\s.-]?\d{3,4}"  # (xxx) xxx-xxxx
 )
 _RE_NUMERIC = re.compile(r"\d{6,}")
 _RE_ALNUM = re.compile(r"[A-Z0-9]{5,}")
@@ -43,16 +44,60 @@ _DIGITS_VI = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", 
 _DIGITS_EN = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
 
 _LETTERS_VI = {
-    "A": "a", "B": "bờ", "C": "sờ", "D": "dờ", "E": "e", "F": "ép", "G": "giê",
-    "H": "hát", "I": "i", "J": "gì", "K": "ka", "L": "e-lờ", "M": "mờ", "N": "nờ",
-    "O": "ô", "P": "pê", "Q": "cu", "R": "e-rờ", "S": "e-xờ", "T": "tê",
-    "U": "u", "V": "vê", "W": "đúp", "X": "ích", "Y": "y", "Z": "dét",
+    "A": "a",
+    "B": "bờ",
+    "C": "sờ",
+    "D": "dờ",
+    "E": "e",
+    "F": "ép",
+    "G": "giê",
+    "H": "hát",
+    "I": "i",
+    "J": "gì",
+    "K": "ka",
+    "L": "e-lờ",
+    "M": "mờ",
+    "N": "nờ",
+    "O": "ô",
+    "P": "pê",
+    "Q": "cu",
+    "R": "e-rờ",
+    "S": "e-xờ",
+    "T": "tê",
+    "U": "u",
+    "V": "vê",
+    "W": "đúp",
+    "X": "ích",
+    "Y": "y",
+    "Z": "dét",
 }
 _LETTERS_EN = {
-    "A": "a", "B": "bee", "C": "see", "D": "dee", "E": "ee", "F": "ef", "G": "gee",
-    "H": "aitch", "I": "eye", "J": "jay", "K": "kay", "L": "el", "M": "em", "N": "en",
-    "O": "oh", "P": "pee", "Q": "cue", "R": "are", "S": "ess", "T": "tee",
-    "U": "you", "V": "vee", "W": "double-u", "X": "ex", "Y": "why", "Z": "zee",
+    "A": "a",
+    "B": "bee",
+    "C": "see",
+    "D": "dee",
+    "E": "ee",
+    "F": "ef",
+    "G": "gee",
+    "H": "aitch",
+    "I": "eye",
+    "J": "jay",
+    "K": "kay",
+    "L": "el",
+    "M": "em",
+    "N": "en",
+    "O": "oh",
+    "P": "pee",
+    "Q": "cue",
+    "R": "are",
+    "S": "ess",
+    "T": "tee",
+    "U": "you",
+    "V": "vee",
+    "W": "double-u",
+    "X": "ex",
+    "Y": "why",
+    "Z": "zee",
 }
 
 
@@ -87,6 +132,7 @@ def _vocalize_alnum_group(text: str, lang: str) -> str:
 # Segmentation
 # ---------------------------------------------------------------------------
 
+
 def _segment_numeric(value: str) -> List[str]:
     """Split numeric string into chunks of 3-4 from left (0901 234 567)."""
     n = len(value)
@@ -97,16 +143,16 @@ def _segment_numeric(value: str) -> List[str]:
     remaining = n
     while remaining > 0:
         if remaining <= 4:
-            chunks.append(value[n - remaining:])
+            chunks.append(value[n - remaining :])
             break
         elif remaining == 5:
-            chunks.append(value[n - remaining:n - remaining + 3])
+            chunks.append(value[n - remaining : n - remaining + 3])
             remaining -= 3
         elif remaining == 6:
-            chunks.append(value[n - remaining:n - remaining + 3])
+            chunks.append(value[n - remaining : n - remaining + 3])
             remaining -= 3
         else:
-            chunks.append(value[n - remaining:n - remaining + 4])
+            chunks.append(value[n - remaining : n - remaining + 4])
             remaining -= 4
     return chunks
 
@@ -172,12 +218,13 @@ def _vocalize_segment(seg: str, slot_type: str, lang: str) -> str:
 # Corruption rules
 # ---------------------------------------------------------------------------
 
+
 def _corrupt_numeric_chunk(chunk: str, rng: random.Random) -> str:
     """Alter one digit: (d+1) % 10."""
     idx = rng.randint(0, len(chunk) - 1)
     d = int(chunk[idx])
     new_d = (d + rng.randint(1, 9)) % 10
-    return chunk[:idx] + str(new_d) + chunk[idx + 1:]
+    return chunk[:idx] + str(new_d) + chunk[idx + 1 :]
 
 
 def _corrupt_letter_group(group: str, rng: random.Random) -> str:
@@ -185,7 +232,7 @@ def _corrupt_letter_group(group: str, rng: random.Random) -> str:
     if len(group) < 2:
         return group
     idx = rng.randint(0, len(group) - 2)
-    return group[:idx] + group[idx + 1] + group[idx] + group[idx + 2:]
+    return group[:idx] + group[idx + 1] + group[idx] + group[idx + 2 :]
 
 
 def _corrupt_alnum_group(group: str, rng: random.Random) -> str:
@@ -204,7 +251,7 @@ def _corrupt_alnum_group(group: str, rng: random.Random) -> str:
         new_c = chr(ord(c) + rng.randint(1, 2))
         if not new_c.isalpha():
             new_c = "Z"
-    return group[:idx] + new_c + group[idx + 1:]
+    return group[:idx] + new_c + group[idx + 1 :]
 
 
 def _corrupt_segment(seg: str, slot_type: str, rng: random.Random) -> str:
@@ -220,7 +267,7 @@ def _corrupt_segment(seg: str, slot_type: str, rng: random.Random) -> str:
             new_c = chr(ord(c) + rng.randint(1, 2))
             if not new_c.isalpha():
                 new_c = "z"
-            return seg[:idx] + new_c + seg[idx + 1:]
+            return seg[:idx] + new_c + seg[idx + 1 :]
         return seg
     if slot_type == "alnum":
         return _corrupt_alnum_group(seg, rng)
@@ -250,6 +297,7 @@ _TEMPLATES = {
 # ---------------------------------------------------------------------------
 # Core injection
 # ---------------------------------------------------------------------------
+
 
 def _build_dictation_turns(
     value: str,
@@ -286,13 +334,23 @@ def _build_dictation_turns(
             wrong_vocal = _vocalize_segment(wrong, slot_type, lang)
             correct_vocal = vocal
             turns.append({"role": dictator, "content": wrong_vocal})
-            turns.append({"role": dictator, "content": tpl["self_correct"].format(correct=correct_vocal)})
-            turns.append({"role": listener, "content": tpl["ack_correct"].format(correct=correct_vocal)})
-            meta_list.append({
-                "type": slot_type, "original": value, "chunk_idx": i,
-                "chunk_original": seg, "chunk_corrupted": wrong,
-                "chunks": segs, "error_idx": i,
-            })
+            turns.append(
+                {"role": dictator, "content": tpl["self_correct"].format(correct=correct_vocal)}
+            )
+            turns.append(
+                {"role": listener, "content": tpl["ack_correct"].format(correct=correct_vocal)}
+            )
+            meta_list.append(
+                {
+                    "type": slot_type,
+                    "original": value,
+                    "chunk_idx": i,
+                    "chunk_original": seg,
+                    "chunk_corrupted": wrong,
+                    "chunks": segs,
+                    "error_idx": i,
+                }
+            )
         else:
             turns.append({"role": dictator, "content": vocal})
 
@@ -302,9 +360,14 @@ def _build_dictation_turns(
     turns.append({"role": listener, "content": rng.choice(tpl["ack_final"])})
 
     if not meta_list:
-        meta_list.append({
-            "type": slot_type, "original": value, "chunks": segs, "error_idx": -1,
-        })
+        meta_list.append(
+            {
+                "type": slot_type,
+                "original": value,
+                "chunks": segs,
+                "error_idx": -1,
+            }
+        )
 
     return turns, meta_list
 
@@ -432,10 +495,18 @@ def process_file(
     if not history:
         return {"file": str(src), "modified": False, "slots_found": 0}
 
-    new_history, modified = _process_dialogue(history, rng, lang, roles, min_digits, min_code_len, perror)
+    new_history, modified = _process_dialogue(
+        history, rng, lang, roles, min_digits, min_code_len, perror
+    )
 
     if dry_run:
-        return {"file": str(src), "modified": modified, "slots_found": len([t for t in new_history if t.get("meta", {}).get("cross_turn_slot")])}
+        return {
+            "file": str(src),
+            "modified": modified,
+            "slots_found": len(
+                [t for t in new_history if t.get("meta", {}).get("cross_turn_slot")]
+            ),
+        }
 
     if modified:
         data["history"] = new_history
@@ -452,59 +523,82 @@ def process_file(
     }
 
 
-def main():
-    import argparse
+def main(config_path=None):
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logger = logging.getLogger(__name__)
 
-    p = argparse.ArgumentParser(description="Cross-turn slot dictation injection.")
-    p.add_argument("--input_root", required=True)
-    p.add_argument("--output_root", required=True)
-    p.add_argument("--split", default="train")
-    p.add_argument("--dataset", required=True)
-    p.add_argument("--perror", type=float, default=0.20)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--target_language", default="vi", choices=["vi", "en"])
-    p.add_argument("--roles", default="both", choices=["user", "assistant", "both"])
-    p.add_argument("--min-digits", type=int, default=6)
-    p.add_argument("--min-code-len", type=int, default=5)
-    p.add_argument("--dry-run", action="store_true")
-    args = p.parse_args()
+    cfg = load_config(config_path)
+    input_root = Path(cfg_get(cfg, "paths.results_root", "data/results_vi"))
+    output_root = Path(cfg_get(cfg, "paths.results_xt_root", "data/results_vi_xt"))
+    target_language = cfg_get(cfg, "run.target_language", "vi")
+    dry_run = bool(cfg_get(cfg, "run.dry_run", False))
+    perror = cfg_get(cfg, "stage1_5_cross_turn.perror", 0.20)
+    seed = cfg_get(cfg, "stage1_5_cross_turn.seed", cfg_get(cfg, "run.seed", 42))
+    roles = cfg_get(cfg, "stage1_5_cross_turn.roles", "both")
+    min_digits = cfg_get(cfg, "stage1_5_cross_turn.min_digits", 6)
+    min_code_len = cfg_get(cfg, "stage1_5_cross_turn.min_code_len", 5)
+    datasets = cfg_get(cfg, "run.datasets", ["interviewer"])
+    splits = cfg_get(cfg, "run.splits", ["train"])
 
-    input_dir = Path(args.input_root) / f"text_dialogue_{args.dataset}" / args.split
-    output_dir = Path(args.output_root) / f"text_dialogue_{args.dataset}" / args.split
-
-    if not input_dir.exists():
-        logger.error("Input dir not found: %s", input_dir)
-        sys.exit(1)
-
-    files = sorted(input_dir.glob("*.json"))
-    logger.info("Found %d files in %s", len(files), input_dir)
-
-    rng = random.Random(args.seed)
+    rng = random.Random(seed)
     total_slots = 0
     total_modified = 0
+    total_files = 0
 
-    for f in files:
-        rel = f.relative_to(input_dir)
-        dst = output_dir / rel
+    for dataset in datasets:
+        for split in splits:
+            input_dir = input_root / f"text_dialogue_{dataset}" / split
+            output_dir = output_root / f"text_dialogue_{dataset}" / split
+            if not input_dir.exists():
+                logger.warning("Input dir not found: %s", input_dir)
+                continue
 
-        if dst.exists() and not args.dry_run:
-            logger.info("Skip (exists): %s", dst)
-            continue
+            files = sorted(input_dir.glob("*.json"))
+            logger.info("Found %d files in %s", len(files), input_dir)
 
-        stats = process_file(f, dst, rng, args.target_language, args.roles, args.min_digits, args.min_code_len, args.perror, args.dry_run)
-        total_slots += stats["slots_found"]
-        if stats["modified"]:
-            total_modified += 1
+            for f in files:
+                rel = f.relative_to(input_dir)
+                dst = output_dir / rel
+                if dst.exists() and not dry_run:
+                    logger.info("Skip (exists): %s", dst)
+                    continue
 
-        if args.dry_run:
-            logger.info("[dry-run] %s: %d slots, modified=%s", f.name, stats["slots_found"], stats["modified"])
+                stats = process_file(
+                    f,
+                    dst,
+                    rng,
+                    target_language,
+                    roles,
+                    min_digits,
+                    min_code_len,
+                    perror,
+                    dry_run,
+                )
+                total_slots += stats["slots_found"]
+                total_files += 1
+                if stats["modified"]:
+                    total_modified += 1
+                if dry_run:
+                    logger.info(
+                        "[dry-run] %s: %d slots, modified=%s",
+                        f.name,
+                        stats["slots_found"],
+                        stats["modified"],
+                    )
 
-    logger.info("Done. Modified %d/%d files, %d total slots.", total_modified, len(files), total_slots)
+    logger.info(
+        "Done. Modified %d/%d files, %d total slots.",
+        total_modified,
+        total_files,
+        total_slots,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    _ap = argparse.ArgumentParser(description="Cross-turn slot dictation injection.")
+    _ap.add_argument("--config", default=None, help="Path to config.yaml")
+    main(_ap.parse_args().config)

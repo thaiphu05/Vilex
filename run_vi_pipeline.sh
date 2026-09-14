@@ -7,53 +7,28 @@ PY="${PY:-python}"
 # Gợi ý: conda activate vilex-omnivoice  (hoặc vilex)
 # export PY="/path/to/envs/vilex/bin/python"
 
-
-MAX_TRAIN_SAMPLES=2      # Stage 1: số dialogue nguồn xử lý (vd 2). Trống = toàn bộ.
-MAX_DIALOGUES=2          # Stage 4 & Stage 5: số dialogue xử lý. Trống = toàn bộ.
-NUM_VARIANTS=3            # Stage 5: số bản audio / dialogue.
-
-  export GEMINI_CREDENTIALS="compact-record-506103-d5-03a04dceeac7.json"   # Vertex AI
-#   # hoặc:
-  export GEMINI_MIN_INTERVAL=0.5                                          
+# All stage parameters live in ./config.yaml (edit that file, not this script).
+# Secrets stay in the environment:
 if [[ -z "${GEMINI_CREDENTIALS:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
   echo "ERROR: chưa set GEMINI_CREDENTIALS hoặc GEMINI_API_KEY. Vui lòng export trước khi chạy." >&2
   exit 1
 fi
 export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
 
-# Stage 1 — Speechify (tạo dialogue gốc tiếng Việt, default vi)
-"$PY" -m src.speechify_run -d interviewer --split train --save_dir results_vi \
-  --llm_model_name gemini-3.6-flash --max_train_samples 1
+# Stage 1 — Speechify (spoken-style conversion)
+"$PY" -m src.speechify_run
 
-# Stage 1.5 — Cross-turn slot dictation (rule-based, 0 API calls)
-"$PY" -m src.cross_turn_slots --input_root results_vi --output_root results_vi_xt \
-  --split train --dataset interviewer --perror 0.20 --seed 42 \
-  --target_language vi --roles both
+# Stage 1.5 — Cross-turn slot dictation
+"$PY" -m src.cross_turn_slots
 
-# Stage 1.75 — Disfluency injection (rule-based, 0 API calls)
-"$PY" -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis \
-  --split train --dataset interviewer --seed 42 --target_language vi \
-  --scale_user 0.4 --scale_assistant 0.25
+# Stage 1.75 — Disfluency injection
+"$PY" -m src.disfluency
 
-# Stage 4 — Synthesis (turn-taking + boundary, default vi)
-"$PY" -m src.synthesis.run -d interviewer -s train \
-  --input_root results_vi_dis --save_root outputs/vi_tt \
-  --llm_model_name gemini-3.6-flash \
-  --boundary_model_name gemini-3.6-flash \
-  --tt_model_name gemini-3.6-flash \
-  --max_dialogues 1 --max_turns 0
+# Stage 4 — Synthesis (turn-taking + boundary)
+"$PY" -m src.synthesis.run
 
-# Stage 4 (tiếp) — Backchannel (default vi)
-"$PY" -m src.synthesis.run_add_bc --dataset interviewer --split train \
-  --input_root outputs/vi_tt --output_root outputs/vi_tt_bc \
-  --model_name gemini-3.6-flash
+# Stage 4b — Backchannel content
+"$PY" -m src.synthesis.run_add_bc
 
-# Stage 5 — OmniVoice TTS (default vi + omnivoice, 2 kênh + clone từ voice pool)
-# Mỗi dialogue pick ngẫu nhiên 2 giọng distinct từ thư mục voice_clone (user + assistant).
-# Yêu cầu: mỗi file <tên>.wav phải có <tên>.txt cùng thư mục (transcript chính xác).
-"$PY" tts_render/convert_spoken.py \
-  --input_glob "outputs/vi_tt_bc/text_dialogue_interviewer/train/*.json" \
-  --save_dir outputs/vi_audio \
-  --omnivoice_voice_pool "voice_clone" \
-  --omnivoice_render_tags \
-  --num_variants 1 --device cpu
+# Stage 5 — OmniVoice TTS (2-channel + voice-clone pool)
+"$PY" tts_render/convert_spoken.py

@@ -1,0 +1,201 @@
+# Vilex pipeline configuration — EXAMPLE.
+#
+# Copy to `config.yaml` before running (config.yaml is gitignored so your local
+# models/paths/secrets-free settings don't get committed):
+#
+#     cp config_example.yaml config.yaml
+#
+# Single source of truth for every tunable parameter across Stages 1-5.
+# Precedence: env override (VILEX_*) > config.yaml > in-code defaults.
+# Secrets (GEMINI_CREDENTIALS / GEMINI_API_KEY / OPENAI_API_KEY) stay in the
+# environment and are intentionally NOT stored here.
+
+# ---------------------------------------------------------------- run / paths
+run:
+  seed: 42
+  datasets: [interviewer, multiwoz, negotiator, socraticlm, persuader]
+  splits: [train, test]
+  target_language: vi
+  dry_run: false
+  test_parse: false
+
+paths:
+  results_root: data/results_vi          # Stage 1 output
+  results_xt_root: data/results_vi_xt    # Stage 1.5 output
+  results_dis_root: data/results_vi_dis  # Stage 1.75 output
+  synthesis_root: data/vi_tt             # Stage 4 output
+  bc_root: data/vi_tt_bc                 # Stage 4b output
+  audio_root: data/vi_audio              # Stage 5 output
+  data_root: data/raw                    # multiwoz / negotiator / socraticlm
+  input_path: ""                         # persuader single-file corpus
+  voice_clone_pool: data/voice_clone     # Stage 5 reference wavs + .txt sidecars
+  logdir: data/logs
+
+# ---------------------------------------------------------------- llm routing
+llm:
+  writer_model: gemini-3.6-flash
+  boundary_model: gemini-3.6-flash
+  tt_model: gemini-3.6-flash
+  bc_model: gemini-3.6-flash
+  base_url: http://localhost:8000/v1     # self-hosted (Qwen/...)
+  bc_base_url: http://localhost:8008/v1  # Stage 4b backchannel endpoint
+  api_key: EMPTY
+  temperature: 0.7
+  gemini_min_interval: 2.0               # seconds between Gemini calls (rate limit)
+  gemini_location: global                # Vertex AI region
+
+# ---------------------------------------------------------------- Stage 1
+stage1_speechify:
+  max_train_samples: 25
+  max_test_samples: 25
+  max_variants: 1
+  interviewer_subset: workforce
+  temperature: 0.7
+  concise: false
+
+# ---------------------------------------------------------------- Stage 1.5
+stage1_5_cross_turn:
+  perror: 0.20
+  seed: 42
+  roles: both          # user | assistant | both
+  min_digits: 6
+  min_code_len: 5
+
+# ---------------------------------------------------------------- Stage 1.75
+stage1_75_disfluency:
+  seed: 42
+  scales:
+    user: 0.4
+    assistant: 0.25
+  shriberg_b: 0.9453
+  types: [fp, dm, edit, rep]
+  rep_span: [1, 1, 2]
+  inventories:
+    fp:
+      vi: ["ừm", "à", "ờ", "ừ", "hừm", "ơ", "ưm"]
+      en: ["um", "uh", "er", "hmm", "ah"]
+    dm:
+      vi: ["à mà", "thì", "mà"]
+      en: ["like", "you know", "well", "so", "I mean", "actually"]
+    edit:
+      vi: ["ý tôi là", "tức là", "hay là", "không phải", "à mà"]
+      en: ["I mean", "that is", "or rather", "no wait", "wait"]
+
+# ---------------------------------------------------------------- Stage 4
+stage4_synthesis:
+  max_turns: 0        # 0 = auto = len(source_turns)
+  max_dialogues: 15
+  max_workers: 1
+  temperature_user: 0.2
+  temperature_ai: 0.2
+  guards:
+    length_guard_start: 0
+    interruption_guard_start: 3
+    length_guard_gap: 4
+  ft_terminal_punct: [".", "?", "!"]
+  hesitations:
+    - um
+    - uh
+    - umm
+    - uhh
+    - hm
+    - hmm
+    - huh
+    - ưm
+    - à
+    - ừ
+    - ơ
+    - ơi
+    - hử
+    - chà
+    - á
+    - ú
+  judge:
+    stop_check_every: 0      # 0 disables the judge early-stop
+    min_turns_before_stop: 2
+  hf:
+    max_seq_length: 1024
+    use_last_n_history: 4
+    batch_size: 8
+    load_in_4bit: false
+
+# ---------------------------------------------------------------- Stage 4b
+stage4b_backchannel:
+  prompt_kind: qwen        # qwen | legacy
+  max_tokens: 32
+  temperature: 0.7
+  max_retries: 2
+  valid_max_words: 3
+  max_file_attempts: 3
+  fallback:
+    vi: ["ừ", "à", "vâng", "phải", "ồ"]
+    en: ["mhm", "yeah", "right", "okay", "oh"]
+
+# ---------------------------------------------------------------- Stage 5
+stage5_tts:
+  backend: omnivoice        # chatterbox | omnivoice
+  language: vi              # vi | en
+  device: cpu               # cpu | cuda
+  num_variants: 1
+  max_dialogues: 0          # 0 = all
+  seed: 42
+  target_sr: 24000
+  prompt_sr: 16000
+  timing:
+    gap:
+      exp_scale: 0.7067
+      min_sec: 0.003
+      max_sec: 2.50
+    pause:
+      exp_scale: 0.6780
+      min_sec: 0.001
+      max_sec: 4.00
+    intra_pause:
+      exp_scale: 0.30
+      min_sec: 0.10
+      max_sec: 1.00
+    user_interrupt_overlap_sec: 0.64
+    user_interrupt_prob: 0.5
+  audio:
+    target_lufs: -23.0
+    noise_floor_amp: 0.000
+    backchannel_attenuation: 0.8
+    vad_threshold: 0.3
+    max_prompt_secs: 10
+  voice:
+    user_instruct: "male, northern accent"
+    assistant_instruct: "female, gentle"
+  tags:
+    render: false           # keep supported tags for the TTS to voice
+    supported:
+      - "[laughter]"
+      - "[sigh]"
+      - "[confirmation-en]"
+      - "[question-en]"
+      - "[question-ah]"
+      - "[question-oh]"
+      - "[question-ei]"
+      - "[question-yi]"
+      - "[surprise-ah]"
+      - "[surprise-oh]"
+      - "[surprise-wa]"
+      - "[surprise-yo]"
+      - "[dissatisfaction-hnn]"
+  backchannels:
+    candidates:
+      en: ["yeah", "uh-huh", "mm-hmm", "right", "okay"]
+      vi:
+        - "ưm"
+        - "à"
+        - "ừ"
+        - "vâng"
+        - "phải"
+        - "ồ"
+        - "mm-hm"
+        - "uh huh"
+        - "ok"
+        - "ừ [confirmation-en]"
+        - "ồ [surprise-oh]"
+        - "[laughter]"
+        - "[sigh]"
+    rising_tokens: ["yeah", "ưm", "vâng", "à", "ừ"]

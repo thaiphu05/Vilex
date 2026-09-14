@@ -10,7 +10,7 @@ Stage 5 makes **0 LLM calls**.
 ## Input → Output
 
 ```
-Stage 4 JSON  outputs/vi_tt_bc/text_dialogue_<ds>/<split>/*.json
+Stage 4 JSON  data/vi_tt_bc/text_dialogue_<ds>/<split>/*.json
    history[] + [BACKCHANNEL]/[TAKE_FLOOR] + word_index decisions
       │  should_drop_dialogue()  (filter)
       │  convert_original_to_expected()  (schema)

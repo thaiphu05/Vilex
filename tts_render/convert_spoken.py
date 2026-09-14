@@ -8,6 +8,12 @@ os.environ.setdefault("TRANSFORMERS_SILENT", "yes")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
+import sys
+from pathlib import Path as _Path
+
+sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))  # repo root
+from src.config import cfg_get, load_config  # noqa: E402
+
 import argparse
 import shutil
 import numpy as np
@@ -1347,6 +1353,95 @@ def main_process(
     return merged_speech, total_speech, backchannel_list, dialogue
 
 
+def _apply_tts_config(cfg):
+    """Push config.yaml (stage5_tts.*) onto the module-level knobs."""
+    global TARGET_SR, PROMPT_SR
+    global GAP_EXP_SCALE, GAP_MIN_SEC, GAP_MAX_SEC
+    global PAUSE_EXP_SCALE, PAUSE_MIN_SEC, PAUSE_MAX_SEC
+    global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
+    global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
+    global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP
+    global OMNI_PARALINGUIST_TAGS, RENDERABLE_TAGS, _PARALINGUIST_RE
+    global DEFAULT_BC_CANDIDATES, DEFAULT_BC_CANDIDATES_VI, _BC_RISING_TOKENS
+
+    s5 = cfg_get(cfg, "stage5_tts", {})
+    timing = s5.get("timing", {}) if isinstance(s5.get("timing"), dict) else {}
+    audio = s5.get("audio", {}) if isinstance(s5.get("audio"), dict) else {}
+    tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
+    bc = s5.get("backchannels", {}) if isinstance(s5.get("backchannels"), dict) else {}
+
+    TARGET_SR = s5.get("target_sr", TARGET_SR)
+    PROMPT_SR = s5.get("prompt_sr", PROMPT_SR)
+
+    gap = timing.get("gap", {}) if isinstance(timing.get("gap"), dict) else {}
+    GAP_EXP_SCALE = gap.get("exp_scale", GAP_EXP_SCALE)
+    GAP_MIN_SEC = gap.get("min_sec", GAP_MIN_SEC)
+    GAP_MAX_SEC = gap.get("max_sec", GAP_MAX_SEC)
+
+    pause = timing.get("pause", {}) if isinstance(timing.get("pause"), dict) else {}
+    PAUSE_EXP_SCALE = pause.get("exp_scale", PAUSE_EXP_SCALE)
+    PAUSE_MIN_SEC = pause.get("min_sec", PAUSE_MIN_SEC)
+    PAUSE_MAX_SEC = pause.get("max_sec", PAUSE_MAX_SEC)
+
+    intra = timing.get("intra_pause", {}) if isinstance(timing.get("intra_pause"), dict) else {}
+    PAUSE_INTRA_EXP_SCALE = intra.get("exp_scale", PAUSE_INTRA_EXP_SCALE)
+    PAUSE_INTRA_MIN_SEC = intra.get("min_sec", PAUSE_INTRA_MIN_SEC)
+    PAUSE_INTRA_MAX_SEC = intra.get("max_sec", PAUSE_INTRA_MAX_SEC)
+
+    USER_INTERRUPT_OVERLAP_SEC = timing.get(
+        "user_interrupt_overlap_sec", USER_INTERRUPT_OVERLAP_SEC
+    )
+    USER_INTERRUPT_PROB = timing.get("user_interrupt_prob", USER_INTERRUPT_PROB)
+
+    MAX_PROMPT_SECS = audio.get("max_prompt_secs", MAX_PROMPT_SECS)
+    TARGET_LUFS = audio.get("target_lufs", TARGET_LUFS)
+    NOISE_FLOOR_AMP = audio.get("noise_floor_amp", NOISE_FLOOR_AMP)
+
+    supported = tags.get("supported")
+    if isinstance(supported, list) and supported:
+        OMNI_PARALINGUIST_TAGS = list(supported)
+        RENDERABLE_TAGS = frozenset(OMNI_PARALINGUIST_TAGS)
+        _PARALINGUIST_RE = re.compile("|".join(re.escape(t) for t in OMNI_PARALINGUIST_TAGS))
+
+    cands = bc.get("candidates", {}) if isinstance(bc.get("candidates"), dict) else {}
+    if cands.get("en"):
+        DEFAULT_BC_CANDIDATES = cands["en"]
+    if cands.get("vi"):
+        DEFAULT_BC_CANDIDATES_VI = cands["vi"]
+    if bc.get("rising_tokens"):
+        _BC_RISING_TOKENS = set(bc["rising_tokens"])
+
+
+def _build_tts_args(cfg):
+    from types import SimpleNamespace
+
+    s5 = cfg_get(cfg, "stage5_tts", {})
+    paths = cfg_get(cfg, "paths", {})
+    voice = s5.get("voice", {}) if isinstance(s5.get("voice"), dict) else {}
+    tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
+    return SimpleNamespace(
+        tts_backend=s5.get("backend", "omnivoice"),
+        language=s5.get("language", "vi"),
+        device=s5.get("device", "cpu"),
+        num_variants=s5.get("num_variants", 1),
+        seed=s5.get("seed", cfg_get(cfg, "run.seed", 42)),
+        max_dialogues=s5.get("max_dialogues", 0),
+        input_glob=[f"{paths.get('bc_root', 'data/vi_tt_bc')}/**/*.json"],
+        save_dir=paths.get("audio_root", "data/vi_audio"),
+        omnivoice_voice_pool=paths.get("voice_clone_pool", "voice_clone"),
+        omnivoice_user_instruct=voice.get("user_instruct", "male, northern accent"),
+        omnivoice_assistant_instruct=voice.get("assistant_instruct", "female, gentle"),
+        omnivoice_render_tags=bool(tags.get("render", False)),
+        prompt_dir=str(_Path(__file__).resolve().parent / "prompt_wavs"),
+        voices_dir=str(_Path(__file__).resolve().parent / "user_wavs"),
+        librispeech_root=str(_Path(__file__).resolve().parent / "librispeech_samples"),
+        librispeech_subsets="train-clean-100",
+        num_shards=1,
+        shard_id=0,
+        exclude_ids_file="",
+    )
+
+
 def main(args):
     global TARGET_SR, TTS_BACKEND, TTS_LANGUAGE, OMNI_INSTRUCTS, RENDER_TAGS
 
@@ -1697,130 +1792,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--prompt_dir",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_wavs"),
-        help="Directory containing assistant_en.wav (assistant prompt)",
-    )
-    parser.add_argument(
-        "--voices_dir",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_wavs"),
-        help="[Deprecated] kept for backwards compat; user voices now come from LibriSpeech.",
-    )
-    # Defaults to the tiny 12-speaker sample shipped in tts_render/librispeech_samples/
-    # so this runs out of the box. For paper-scale rendering, download the full
-    # corpus from https://www.openslr.org/12 and point --librispeech_root at it
-    # (e.g. --librispeech_root /path/to/LibriSpeech --librispeech_subsets train-clean-100,train-clean-360).
-    parser.add_argument(
-        "--librispeech_root",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "librispeech_samples"),
-        help="Root containing LibriSpeech subset directories (train-clean-100, etc.). "
-        "Defaults to the bundled sample set; download the full corpus from "
-        "https://www.openslr.org/12 for paper-scale rendering.",
-    )
-    parser.add_argument(
-        "--librispeech_subsets",
-        default="train-clean-100",
-        help="Comma-separated LibriSpeech subsets to sample user voices from. "
-        "Use train-clean-100,train-clean-360 with the full corpus.",
-    )
-    parser.add_argument(
-        "--input_glob",
-        type=str,
-        required=True,
-        nargs="+",
-        help="One or more globs for input text-dialogue JSONs. Files from all globs are concatenated and de-duplicated before sharding.",
-    )
-    parser.add_argument(
-        "--save_dir",
-        type=Path,
-        default=Path("audios_chatterbox"),
-        help="Root output directory; per-dialogue paths are <save_dir>/<scenario_dir>/train/<id>/var<NN>/",
-    )
-    parser.add_argument(
-        "--num_variants",
-        type=int,
-        default=10,
-        help="Number of distinct user-voice variants to generate per text dialogue.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Base random seed for voice selection and TTS sampling.",
-    )
-    parser.add_argument(
-        "--num_shards", type=int, default=1, help="Total number of shards (parallel workers)."
-    )
-    parser.add_argument(
-        "--shard_id", type=int, default=0, help="This worker's shard index in [0, num_shards)."
-    )
-    parser.add_argument(
-        "--max_dialogues",
-        type=int,
-        default=0,
-        help="If >0, process only the first N dialogues from the (sharded) list. Useful for smoke tests.",
-    )
-    parser.add_argument(
-        "--exclude_ids_file",
-        type=str,
-        default="",
-        help="Optional path to a newline-delimited file of dialogue stems to skip (e.g. a blocklist).",
-    )
-    # --- TTS backend / language selection ---
-    parser.add_argument(
-        "--tts_backend",
-        type=str,
-        default="omnivoice",
-        choices=["chatterbox", "omnivoice"],
-        help="TTS engine. 'omnivoice' uses k2-fsa/OmniVoice for Vietnamese (Vilex default); "
-        "'chatterbox' is the original English engine. Use --tts_backend chatterbox --language en for English. (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--language",
-        type=str,
-        default="vi",
-        choices=["en", "vi"],
-        help="Output language. 'vi' sets OmniVoice language='Vietnamese' and whisperx 'vi' (default). "
-        "Use --language en --tts_backend chatterbox for English. (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--omnivoice_user_instruct",
-        type=str,
-        default="male, british accent",
-        help="OmniVoice voice-design instruct for the user speaker.",
-    )
-    parser.add_argument(
-        "--omnivoice_assistant_instruct",
-        type=str,
-        default="female, american accent",
-        help="OmniVoice voice-design instruct for the assistant speaker.",
-    )
-    parser.add_argument(
-        "--omnivoice_render_tags",
-        action="store_true",
-        default=False,
-        help="Keep supported paralinguistic tags ([laughter], [sigh], [question-*], "
-        "[surprise-*], [confirmation-en], [dissatisfaction-hnn]) so OmniVoice renders "
-        "them as audio. Off by default: tags are stripped before TTS (the checkpoint "
-        "otherwise reads them as literal text). Unknown tags are always stripped.",
-    )
-    parser.add_argument(
-        "--omnivoice_voice_pool",
-        type=str,
-        default="",
-        help="Directory of reference wavs + sidecar <name>.txt transcripts. Stage 5 randomly "
-             "picks 2 DISTINCT voices per dialogue (one for user, one for assistant). Needs >=2 wavs.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Device for the TTS model and whisperx aligner. Use 'cuda' on a GPU box. "
-        "(default: %(default)s)",
-    )
-    args = parser.parse_args()
-
-    main(args)
+    _ap = argparse.ArgumentParser(description="Stage 5: TTS rendering.")
+    _ap.add_argument("--config", default=None, help="Path to config.yaml")
+    _cfg = load_config(_ap.parse_args().config)
+    _apply_tts_config(_cfg)
+    main(_build_tts_args(_cfg))

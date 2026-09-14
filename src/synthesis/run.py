@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 # Note: build_boundary_annotation_queue is removed as the new logic
 # handles detection dynamically within speechify_turn_by_turn
+from src.config import cfg_get, load_config
 from src.llm_client import make_client
 from src.synthesis.core import speechify_turn_by_turn
 from src.synthesis.prompts import _normalize_ws
@@ -91,121 +92,59 @@ def extract_scenario(example: Dict[str, Any]) -> str:
     return "A generic conversation."
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Apply turn-taking predictor (TOKEN_BC/TOKEN_FT insertion) using dynamic boundary detection and probability estimation."
-    )
-    parser.add_argument(
-        "-d", "--dataset", type=str, choices=DATASET_CHOICES + ["all"], required=True
-    )
-    parser.add_argument("-s", "--split", type=str, choices=SPLIT_CHOICES, required=True)
+def _build_args(cfg):
+    """Adapt the config into the lightweight Namespace the loop below reads."""
+    from types import SimpleNamespace
 
-    # No default: this used to name a Hub repo path pointing at the *annotations*
-    # half, which is neither a local directory nor the half Stage 4 reads. Nothing
-    # matched, every dataset was skipped with a WARN, and the run exited 0 having
-    # generated nothing. Point it at the tree tools/unpack_corpus.py --kind
-    # dialogues writes (data-dialogues/ by default), or at Stage 1 output.
-    parser.add_argument("--input_root", type=str, required=True)
-    parser.add_argument("--save_root", type=str, default="outputs/generated_dialogues_with_tt")
-
-    parser.add_argument(
-        "--max_dialogues",
-        type=int,
-        default=1000,
-        help="Max dialogues to process per dataset/split (for quick testing)",
-    )
-
-    # --- Client 1: Main Content Generator (Writer) ---
-    parser.add_argument("--llm_model_name", type=str, default="gpt-4.1")
-    parser.add_argument("--api_key", type=str, default="EMPTY")
-    parser.add_argument("--base_url", type=str, default="http://localhost:8000/v1")
-
-    # --- Client 2: Boundary Detector (Linguist) ---
-    parser.add_argument(
-        "--boundary_model_name",
-        type=str,
-        default="gpt-4.1-mini",
-        help="Model for detecting clause boundaries",
-    )
-    parser.add_argument(
-        "--boundary_api_key", type=str, default=None, help="Defaults to env OPENAI_API_KEY if None"
-    )
-    parser.add_argument("--boundary_base_url", type=str, default=None)
-
-    # --- Client 3: Turn-Taking Probability Estimator (Scorer), LLM-based ---
-    parser.add_argument(
-        "--tt_model_name",
-        type=str,
-        default="Qwen/Qwen3-14B",
-        help="Model for estimating floor/backchannel probs (LLM-based)",
-    )
-    parser.add_argument("--tt_api_key", type=str, default="EMPTY")
-    parser.add_argument(
-        "--tt_base_url",
-        type=str,
-        default="http://localhost:8000/v1",
-        help="Often a separate vLLM instance",
+    s4 = cfg_get(cfg, "stage4_synthesis", {})
+    llm = cfg_get(cfg, "llm", {})
+    paths = cfg_get(cfg, "paths", {})
+    hf = s4.get("hf", {}) if isinstance(s4.get("hf"), dict) else {}
+    return SimpleNamespace(
+        input_root=paths.get("results_dis_root", "data/results_vi_dis"),
+        save_root=paths.get("synthesis_root", "data/vi_tt"),
+        max_dialogues=s4.get("max_dialogues", 1000),
+        llm_model_name=llm.get("writer_model", "gpt-4.1"),
+        api_key=llm.get("api_key", "EMPTY"),
+        base_url=llm.get("base_url", "http://localhost:8000/v1"),
+        boundary_model_name=llm.get("boundary_model", "gpt-4.1-mini"),
+        boundary_api_key=None,
+        boundary_base_url=None,
+        tt_model_name=llm.get("tt_model", "Qwen/Qwen3-14B"),
+        tt_api_key=llm.get("api_key", "EMPTY"),
+        tt_base_url=llm.get("base_url", "http://localhost:8000/v1"),
+        hf_model_name_or_path=s4.get("hf_model_name_or_path"),
+        hf_peft_path=s4.get("hf_peft_path"),
+        hf_load_in_4bit=hf.get("load_in_4bit", False),
+        hf_max_seq_length=hf.get("max_seq_length", 1024),
+        hf_use_last_n_history=hf.get("use_last_n_history", 4),
+        hf_batch_size=hf.get("batch_size", 8),
+        max_turns=s4.get("max_turns", 0),
+        temperature_user=s4.get("temperature_user", 0.2),
+        temperature_ai=s4.get("temperature_ai", 0.2),
+        target_language=cfg_get(cfg, "run.target_language", "vi"),
+        max_workers=s4.get("max_workers", 1),
     )
 
-    # --- HF Classification-based Turn-Taking Predictor (alternative to Client 3) ---
-    parser.add_argument(
-        "--hf_model_name_or_path",
-        type=str,
-        default=None,
-        help="HuggingFace token-classification model for TT prediction. "
-        "When set, disables LLM-based (Client 3) scoring.",
-    )
-    parser.add_argument(
-        "--hf_peft_path",
-        type=str,
-        default=None,
-        help="Path to PEFT/LoRA checkpoint for the HF TT model.",
-    )
-    parser.add_argument(
-        "--hf_load_in_4bit",
-        action="store_true",
-        help="Load HF TT model in 4-bit quantisation (requires bitsandbytes).",
-    )
-    parser.add_argument(
-        "--hf_max_seq_length",
-        type=int,
-        default=1024,
-        help="Max token length for HF TT model inputs.",
-    )
-    parser.add_argument(
-        "--hf_use_last_n_history",
-        type=int,
-        default=4,
-        help="Number of previous turns to include as context for the HF TT model.",
-    )
-    parser.add_argument(
-        "--hf_batch_size", type=int, default=8, help="Batch size for HF TT model inference."
-    )
 
-    # --- Pipeline Config ---
-    parser.add_argument(
-        "--max_turns",
-        type=int,
-        default=0,
-        help="Cap the number of generated turns. 0 (default) means auto = len(source_turns).",
-    )
-    parser.add_argument("--temperature_user", type=float, default=0.2)
-    parser.add_argument("--temperature_ai", type=float, default=0.2)
-    parser.add_argument(
-        "--target_language",
-        type=str,
-        default="vi",
-        choices=["en", "vi"],
-        help="Output language. 'vi' makes the LLM generate Vietnamese turns (prompts stay English). (default: %(default)s) Use --target_language en for English.",
-    )
-    parser.add_argument(
-        "--max_workers",
-        type=int,
-        default=1,
-        help="Parallel dialogue workers (ThreadPoolExecutor). 1=sequential (default), 8 recommended with GEMINI_MIN_INTERVAL=0.5 (120/min). Shares LLM clients via global pacing lock.",
-    )
+def _apply_stage4_config(cfg):
+    """Push guards / seed / FT punctuation onto core's module-level state."""
+    from src.synthesis import core
 
-    args = parser.parse_args()
+    guards = cfg_get(cfg, "stage4_synthesis.guards", {})
+    for key in ("length_guard_start", "interruption_guard_start", "length_guard_gap"):
+        if isinstance(guards, dict) and key in guards:
+            core.CONFIG[key] = guards[key]
+    core.CONFIG["sampling_seed"] = cfg_get(cfg, "run.seed", core.CONFIG.get("sampling_seed", 42))
+    ft_punct = cfg_get(cfg, "stage4_synthesis.ft_terminal_punct")
+    if isinstance(ft_punct, list) and ft_punct:
+        core._FT_TERMINAL_PUNCT = tuple(ft_punct)
+
+
+def main(config_path=None):
+    cfg = load_config(config_path)
+    args = _build_args(cfg)
+    _apply_stage4_config(cfg)
 
     input_root = Path(args.input_root)
     save_root = Path(args.save_root)
@@ -233,27 +172,25 @@ def main():
     else:
         client_tt = make_client(args.tt_model_name, args.tt_api_key, args.tt_base_url)
 
-    # Resolve datasets
-    if args.dataset == "all":
-        datasets = DATASET_CHOICES
-    else:
-        datasets = [args.dataset]
+    datasets = cfg_get(cfg, "run.datasets", [])
+    splits = cfg_get(cfg, "run.splits", ["train"])
+    pairs = [(d, s) for d in datasets for s in splits]
 
     n_inputs_found = 0
-    for dataset in datasets:
-        all_paths = iter_input_jsons(input_root, dataset, args.split)
+    for dataset, split in pairs:
+        all_paths = iter_input_jsons(input_root, dataset, split)
         if not all_paths:
-            print(f"[WARN] No input JSONs for {dataset}/{args.split}, skipping.")
+            print(f"[WARN] No input JSONs for {dataset}/{split}, skipping.")
             continue
         n_inputs_found += len(all_paths)
 
         # Filter pending before capping so reruns don't waste quota on already-done files
-        out_dir = save_root / f"text_dialogue_{dataset}" / args.split
+        out_dir = save_root / f"text_dialogue_{dataset}" / split
         out_dir.mkdir(parents=True, exist_ok=True)
         pending = [p for p in all_paths if not (out_dir / p.name).exists()]
         in_paths = pending[: args.max_dialogues] if args.max_dialogues else pending
         if not in_paths:
-            print(f"[{dataset}/{args.split}] all {len(all_paths)} done, skipping.")
+            print(f"[{dataset}/{split}] all {len(all_paths)} done, skipping.")
             continue
 
         def _process_one(in_path: Path):
@@ -310,7 +247,7 @@ def main():
                 for fut in tqdm(
                     as_completed(futures),
                     total=len(in_paths),
-                    desc=f"Applying TT [{dataset}/{args.split}] x{args.max_workers}",
+                    desc=f"Applying TT [{dataset}/{split}] x{args.max_workers}",
                 ):
                     status, name, err = fut.result()
                     if status == "ok":
@@ -321,10 +258,10 @@ def main():
                         n_fail += 1
                         print(f"[FAIL] {name}: {err}")
             print(
-                f"[{dataset}/{args.split}] workers={args.max_workers} ok={n_ok} skip={n_skip} fail={n_fail}"
+                f"[{dataset}/{split}] workers={args.max_workers} ok={n_ok} skip={n_skip} fail={n_fail}"
             )
         else:
-            for in_path in tqdm(in_paths, desc=f"Applying TT predictor [{dataset}/{args.split}]"):
+            for in_path in tqdm(in_paths, desc=f"Applying TT predictor [{dataset}/{split}]"):
                 status, name, err = _process_one(in_path)
                 if status == "fail":
                     print(f"[FAIL] {name}: {err}")
@@ -334,12 +271,18 @@ def main():
     # reads as "nothing left to do" when nothing was ever read.
     if n_inputs_found == 0:
         raise SystemExit(
-            f"No input dialogues under {input_root} for split {args.split!r}. "
-            f"--input_root must contain text_dialogue_<dataset>/{args.split}/*.json; "
+            f"No input dialogues under {input_root} for datasets={datasets} splits={splits}. "
+            f"The root must contain text_dialogue_<dataset>/<split>/*.json; "
             f"convert the released corpus with "
             f"`tools/unpack_corpus.py --kind dialogues` first."
         )
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    _ap = argparse.ArgumentParser(
+        description="Apply turn-taking predictor (TOKEN_BC/TOKEN_FT insertion)."
+    )
+    _ap.add_argument("--config", default=None, help="Path to config.yaml")
+    main(_ap.parse_args().config)

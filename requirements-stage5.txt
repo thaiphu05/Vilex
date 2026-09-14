@@ -36,6 +36,7 @@ nltk>=3.8
 silero-vad>=6.2.1
 whisperx>=3.3.1
 numpy<2
+pyyaml>=6.0
 
 # ---------------------------------------------------------------------------
 # Block B — English (Chatterbox) path only.
