@@ -38,6 +38,23 @@ paths:
 Output lands in `<paths.results_root>/text_dialogue_<dataset>/{train,test}/*.json`
 — the same layout Stages 2-4 read. Existing files are skipped, so a re-run resumes.
 
+**Offline source (no HF).** To convert from a materialized dump instead of the
+raw corpora / Hub, set `paths.source: parsed_source`:
+
+```yaml
+paths:
+  source: parsed_source
+  parsed_source_root: data/parsed_source   # <root>/<dataset>/<split>/*.json
+```
+
+Stage 1 then reads `<parsed_source_root>/<dataset>/<split>/*.json` for every
+dataset — `interviewer` and `soda` included — so nothing reaches the HF Hub and
+`data_root` / `input_paths` are unused. The per-dialogue JSON is the same schema
+`--test-parse` writes (`example_id`, `context`, `history` as `[role, content]`
+pairs) and what `tools/parquet_source.py` produces. The sample budget still
+applies per split, so a small `max_train_samples` / `max_test_samples` avoids
+parsing an entire split (SODA is ~1.19M files).
+
 **Sample budget.** Every dialogue costs one LLM call, so each split is capped
 by `stage1_speechify.max_train_samples` / `max_test_samples` (25 each by
 default; `0` means no cap). Both count *dialogues*, and both sample at even

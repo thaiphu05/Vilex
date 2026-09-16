@@ -26,6 +26,11 @@ paths:
   synthesis_root: data/vi_tt             # Stage 4 output
   bc_root: data/vi_tt_bc                 # Stage 4b output
   audio_root: data/vi_audio              # Stage 5 output
+  # Stage 1 source: "auto" uses the raw corpora / HF Hub; "parsed_source" reads
+  # the offline per-dialogue dump at <parsed_source_root>/<dataset>/<split>/*.json
+  # for every dataset (no HF, no data_root, no input_paths).
+  source: auto                           # auto | parsed_source
+  parsed_source_root: data/parsed_source
   data_root: data/raw                    # multiwoz / negotiator / socraticlm
   input_path: ""                         # global fallback for single-file corpora
   # Per-dataset single-file paths. Priority: input_paths[dataset] > input_path

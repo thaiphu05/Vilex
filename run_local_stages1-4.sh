@@ -3,26 +3,40 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
+
+# Stages 1-4 interpreter; Stage 5 (optional) uses its own env.
 PY="${PY:-python}"
-MODEL="${MODEL:-gemini-3.6-flash}"
-DATASETS="${DATASETS:-interviewer multiwoz negotiator socraticlm persuader}"
+STAGE5_PY="${STAGE5_PY:-}"                 # empty -> skip Stage 5
+MODEL="${MODEL:-}"                         # empty -> use llm.model from config
+DATASETS="${DATASETS:-}"                   # empty -> use run.datasets from config
 LOGDIR="${LOGDIR:-data/logs/run_$(date +%F_%H%M)}"
 mkdir -p "$LOGDIR"
 
-if [[ -z "${GEMINI_CREDENTIALS:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
-  echo "ERROR: export GEMINI_CREDENTIALS or GEMINI_API_KEY first." >&2
-  exit 1
-fi
-export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
+CONFIG="${VILEX_CONFIG:-$REPO/config.yaml}"
 
-# All stage parameters live in ./config.yaml. This script just runs Stages 1-4
-# in order; each stage loops over the datasets/splits declared there.
-# `DATASETS`/`MODEL` here only seed the log header and can override the YAML
-# via VILEX_* env vars when needed.
-export VILEX_RUN__DATASETS="[${DATASETS// /, }]"
-export VILEX_LLM__WRITER_MODEL="${MODEL}"
-export VILEX_LLM__BOUNDARY_MODEL="${MODEL}"
-export VILEX_LLM__TT_MODEL="${MODEL}"
+# Only demand Gemini credentials when the config actually uses a gemini model.
+# A served OpenAI-compatible model (llm.base_url + llm.model) needs none.
+if grep -qE '^[[:space:]]*(model|writer_model|boundary_model|tt_model|bc_model):.*gemini' \
+        "$CONFIG" 2>/dev/null; then
+  if [[ -z "${GEMINI_CREDENTIALS:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
+    echo "ERROR: config uses a gemini model but GEMINI_CREDENTIALS/GEMINI_API_KEY is unset." >&2
+    exit 1
+  fi
+  export GEMINI_LOCATION="${GEMINI_LOCATION:-global}"
+else
+  echo "NOTE: non-gemini models -> using llm.base_url/llm.api_key from config (no GEMINI_* needed)."
+fi
+
+# Explicit env overrides only; otherwise config.yaml wins.
+if [[ -n "$DATASETS" ]]; then
+  export VILEX_RUN__DATASETS="[${DATASETS// /, }]"
+fi
+if [[ -n "$MODEL" ]]; then
+  export VILEX_LLM__WRITER_MODEL="$MODEL"
+  export VILEX_LLM__BOUNDARY_MODEL="$MODEL"
+  export VILEX_LLM__TT_MODEL="$MODEL"
+  export VILEX_LLM__BC_MODEL="$MODEL"
+fi
 
 STATUS="$LOGDIR/STATUS.txt"
 : > "$STATUS"
@@ -43,6 +57,11 @@ run stage1_5 "$PY -m src.cross_turn_slots"
 run stage1_75 "$PY -m src.disfluency"
 run stage4 "$PY -m src.synthesis.run"
 run stage4b "$PY -m src.synthesis.run_add_bc"
+
+# Stage 5 needs a separate environment (torch 2.8 + transformers + OmniVoice/aligner).
+if [[ -n "$STAGE5_PY" ]]; then
+  run stage5 "$STAGE5_PY tts_render/convert_spoken.py"
+fi
 
 echo "--- summary ---"
 cat "$STATUS"

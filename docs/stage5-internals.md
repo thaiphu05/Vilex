@@ -34,7 +34,7 @@ Stage 4 JSON  data/vi_tt_bc/text_dialogue_<ds>/<split>/*.json
 | **OmniVoice** `k2-fsa/OmniVoice` | `from_pretrained("k2-fsa/OmniVoice")` `:1394`; `generate(...)` `:805-822` | TTS main path (VI default). `speed=1.3`, `language="Vietnamese"`, `normalize_text=True`. Turn 1 uses voice-design `instruct`; later turns voice-clone `ref_audio/ref_text`. Paralinguistic tags stripped before `generate()` by default; keep the 13 supported tags with `stage5_tts.tags.render: true` (unknown tags always stripped). |
 | **Chatterbox** `vilex/tts/chatterbox` | `ChatterboxTurboTTS.from_pretrained(device="cuda")` `:1406`; `generate(text, audio_prompt_path)` `:831` | TTS legacy EN path. Cumulative prompt `cumulative_*.wav` (max 10 s) grown per non-BC utterance. |
 | **Silero VAD** `silero_vad.load_silero_vad` | `get_speech_timestamps(threshold=0.3)` `:24, :993, :1043` | Silence trim per sentence + per utterance; guards against 0-length. |
-| **WhisperX** `whisperx.load_align_model` | `language_code="vi"|"en"` `:1399/:1408`; `whisperx.align(...)` `:1138` | Forced alignment of the **host utterance only**, to anchor backchannel times. Not used for transcription. |
+| **Qwen3 forced aligner** `Qwen/Qwen3-ForcedAligner-0.6B-hf` | `_load_forced_aligner()`; `_align_words_once()` → `prepare_forced_aligner_inputs` / `decode_forced_alignment` (transformers native) | Word-level timestamps for the **host utterance** (BC anchoring) and the alignment JSON. Not used for transcription; official language coverage does **not** include Vietnamese. |
 | **NeMo normalizer** | `Normalizer(input_case="cased", lang="en")` `:1415` (lazy) | EN path only: normalize text before word count / alignment. VI sets `normalizer=None`. |
 | **pyloudnorm** | `_loudness_normalize(target=-23.0 LUFS)` `:135-155` | Final EBU R128 normalization of the 2-ch master; peak-norm fallback. |
 | **LibriSpeech sample** | `list_librispeech_speakers` `:171`, `sample_n_librispeech_prompts` `:238` | EN voice source: 12 speakers under `tts_render/librispeech_samples/train-clean-100/`, assistant speaker `458` excluded. |
@@ -49,11 +49,13 @@ Two interpreters, never merged (dependency conflict):
 |---|---|---|
 | env | `.venv` | `.venv-tts` or conda `vilex-omnivoice` |
 | python | ≥3.10 | 3.11 |
-| transformers | ≥4.53 | `==4.46.3` (vendored Chatterbox) |
-| key deps | — | `torchaudio>=2.6,<3`, `silero-vad>=6.2.1`, `whisperx>=3.3.1`, `numpy<2`, `pyloudnorm` (VI), `nemo-text-processing` (EN) |
+| transformers | ≥4.53 | ≥4.56 (Qwen3 aligner); Chatterbox EN path pins `==4.46.3` via `vilex/tts/chatterbox` |
+| key deps | — | `torchaudio>=2.6,<3`, `silero-vad>=6.2.1`, `transformers>=4.56`, `numpy<2`, `pyloudnorm` (VI), `nemo-text-processing` (EN) |
 
-Source: `requirements-stage5.txt:1-54`. Note `numpy<2` is deliberate (NEP 50
-breaks Chatterbox `norm_loudness`); OmniVoice needs no NeMo.
+Source: `requirements-stage5.txt`. Note `numpy<2` is deliberate (NEP 50
+breaks Chatterbox `norm_loudness`); OmniVoice/VI needs no NeMo. The Qwen3
+aligner needs `transformers>=4.56`; if OmniVoice's own transformers pin wins,
+re-install `transformers>=4.56` after OmniVoice.
 
 ## Constants
 
@@ -146,11 +148,11 @@ the gap / pause distributions, `overlap_max_sec`, and `user_interrupt_prob`.
 
 ## Word alignment JSON (`stage5_tts.audio.save_align_json: true`)
 
-`main_process` forced-aligns each host utterance (and BCs with >1 word) via
-`whisperx.align`; the variant loop writes `alignment_user.json` and
-`alignment_assistant.json` next to `meta.json` (schema: `turns[]` with `turn`,
+`main_process` forced-aligns each host utterance (and BCs with >1 word) with the
+Qwen3 aligner (`_align_words_once`); the variant loop writes `alignment_user.json`
+and `alignment_assistant.json` next to `meta.json` (schema: `turns[]` with `turn`,
 `kind ∈ {utterance, backchannel}`, `text`, absolute `start_sec`/`end_sec`,
-`words[{word,start,end,score}]`). Utterance/BC word times are absolute in the
-merged track (`start_sample/24000 + local`); a BC whose alignment is empty gets
-an even split of its clip span. Enabling the flag adds both files to the resume
-skip check.
+`words[{word,start,end}]`). Utterance/BC word times are absolute in the merged
+track (`start_sample/24000 + local`); a BC whose alignment is empty gets an even
+split of its clip span. Enabling the flag adds both files to the resume skip
+check.

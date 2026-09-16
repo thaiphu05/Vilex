@@ -144,8 +144,11 @@ What changes under `backend: omnivoice` / `language: vi`:
 * **TTS backend.** `generate_audio()` calls `OmniVoice.generate(text, instruct,
   language="Vietnamese", normalize_text=True)`; `instruct` is the per-speaker
   voice-design string (no LibriSpeech prompt, no cumulative voice audio).
-* **Align language.** whisperx `load_align_model(language_code="vi")` (backchannel
-  and word-alignment timing — whisperx is kept for this purpose).
+* **Forced alignment.** Word timestamps (backchannel anchoring + the alignment
+  JSON) come from the **Qwen3 forced aligner** (`stage5_tts.aligner`, default
+  `Qwen/Qwen3-ForcedAligner-0.6B-hf`) run on each OmniVoice clip via
+  `transformers`. Note its checkpoints only officially cover 11 languages and
+  **not Vietnamese**, so VI timestamps are best-effort.
 * **No NeMo.** `normalizer=None`; word counting falls back to a Vietnamese regex
   (`_VI_WORD_RE`) instead of `Normalizer.normalize`.
 * **Sentence splitting.** `split_sentences()` avoids the English-only `nltk`
@@ -165,11 +168,11 @@ What changes under `backend: omnivoice` / `language: vi`:
   to also write `alignment_user.json` and `alignment_assistant.json` next to
   `meta.json` in each `varNN/`. Each entry lists `turn`, `kind`
   (`utterance`/`backchannel`), `text`, absolute `start_sec`/`end_sec`, and
-  word-level `words[{word,start,end,score}]` (times absolute in the merged
-  dialogue). Utterance words come from `whisperx.align`; backchannel words come
-  from alignment when the BC has more than one word, otherwise an even split of
-  its clip span. Enabling it makes those files part of the resume check (existing
-  variants are re-rendered to fill them in).
+  word-level `words[{word,start,end}]` (times absolute in the merged
+  dialogue). Utterance words come from the Qwen3 forced aligner; backchannel
+  words come from alignment when the BC has more than one word, otherwise an even
+  split of its clip span. Enabling it makes those files part of the resume check
+  (existing variants are re-rendered to fill them in).
 
 > [!NOTE]
 > OmniVoice's voice-design was tuned mostly on Chinese/English; Vietnamese voice

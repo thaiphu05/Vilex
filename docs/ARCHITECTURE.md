@@ -139,7 +139,7 @@ Steps (`main_process`):
 3. Synthesize sentence by sentence (`generate_audio`), cache backchannels (LRU). Empty audio → 0.2s silence guard.
 4. Silero VAD trims leading/trailing silence per sentence for tight joins.
 5. Timing layer 1 (`aggregate_speech`): same speaker joins directly; turn change → `0.16s` white-noise gap (`-44dBFS`); interrupt → cross-fade overlap `0.45s`–`0.64s`.
-6. Timing layer 2 (backchannels only): `whisperx.align` (VI: `language_code="vi"`, `nguyenvulebinh/wav2vec2-base-vi-vlsp2020`) anchors BC to word-end timestamps.
+6. Timing layer 2 (backchannels only): the **Qwen3 forced aligner** (`stage5_tts.aligner`, `Qwen/Qwen3-ForcedAligner-0.6B-hf`) anchors BC to word-end timestamps.
 7. Mix stereo, normalize full track to LUFS `-23` (`pyloudnorm`, peak fallback).
 8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`, plus `alignment_user.json`/`alignment_assistant.json` when `stage5_tts.audio.save_align_json` is on. Variant with `dialogue.wav` + `meta.json` (and align files, if enabled) exists → skip (resume).
 

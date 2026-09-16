@@ -40,7 +40,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 │   └── llm_client.py           # routing theo tên model (gpt-* / gemini / Qwen)
 ├── tts_render/
 │   ├── convert_spoken.py:42,1589 # stage5_tts.backend default omnivoice, language vi, device cpu/cuda
-│   │                              # aggregate_speech (gap 0.16s, overlap 0.45-0.64s), whisperx vi
+│   │                              # aggregate_speech (gap 0.16s, overlap 0.45-0.64s), Qwen3 aligner vi
 │   ├── bc_cache.py, prompt_wavs/, librispeech_samples/
 │   └── requirements? không, dùng vilex/tts/chatterbox
 ├── vilex/tts/chatterbox/       # vendored MIT, pyproject.toml: name chatterbox-tts
@@ -186,11 +186,11 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 * **Mục tiêu:** Mỗi dialogue JSON → `stage5_tts.num_variants` bản audio **2 kênh** (ch0 assistant, ch1 user, 24kHz 16-bit stereo, swap để assistant ở 0 cho `personaplex-finetune`).
 * **2 backends:**
   * **Chatterbox (EN legacy):** assistant `assistant_en.wav` cố định (LibriSpeech `train-clean-100`), user sample từ `tts_render/librispeech_samples/` (12 speaker) hoặc full LibriSpeech (code `librispeech_root`, không expose config), backchannel render kém (paper dùng ElevenLabs). Cần NeMo `nemo-text-processing` normalize + `pynini`/`OpenFst`, Python `>=3.11,<3.12`.
-  * **OmniVoice (VI default):** voice-design qua `instruct` string (`male, british accent` / `female, american accent` — `tts_render/convert_spoken.py:45`), khỏi audio prompt, khỏi NeMo; `whisperx` neo backchannel với `language_code="vi"` (`nguyenvulebinh/wav2vec2-base-vi-vlsp2020`).
+  * **OmniVoice (VI default):** voice-design qua `instruct` string (`male, british accent` / `female, american accent` — `tts_render/convert_spoken.py:45`), khỏi audio prompt, khỏi NeMo; **Qwen3-ForcedAligner** (`stage5_tts.aligner`, `Qwen/Qwen3-ForcedAligner-0.6B-hf`) neo backchannel.
 * **Cơ chế `main_process`:**
   * Mỗi câu TTS → `generate_audio()` (OmniVoice: có `ref_audio/ref_text` thì clone, ngược lại `instruct`; Chatterbox: `s3tokenizer`).
   * **Silero VAD** cắt lặng đầu/cuối mỗi câu/utterance (`get_speech_timestamps`) để nối sát.
-  * **whisperx.align** (VI path `args.device`, EN hardcode `cuda`) forced-align host audio với transcript.
+  * **Qwen3 forced aligner** (`_align_words_once`, transformers native) forced-align host audio với transcript; `stage5_tts.aligner.device` (mặc định `cuda`).
   * Variant có `dialogue.wav`+`meta.json` (và `alignment_*.json` khi `stage5_tts.audio.save_align_json`) thì skip (resume). `stage5_tts.seed` + `crc32(fpath)` cho deterministic voice pick.
 * **Output per variant `var00/`:** `dialogues/dialogue.wav` (stereo), `user.wav`/`assistant.wav` mono (giữ timestamps, map qua `total_speech_meta["speakers"]`), `utterances/`, `backchannels/`, `meta.json` (+`user_wav`/`assistant_wav`).
 * **Voice-clone pool** `paths.voice_clone_pool` (Overview.md:161-166): pool wav+txt sidecar, clamp 10s `stage5_tts.audio.max_prompt_secs`, resample 24k mono, cache 1 lần, pick 2 giọng distinct per dialogue.
@@ -202,7 +202,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
     * Cùng speaker + `boundary=="turn"` (`is_last_text`) → **PAUSE** sampled, label `timing="pause"`.
     * Cùng speaker + câu giữa lượt (`boundary=="sentence"`) → concat 0, label `timing="none"`.
     * Sample helpers `_sample_gap(turn_dur_sec)` (Exponential scale `0.7067`, clip `[0.003, 2.50]`, scale factor `(dur/3)^0.25 ∈ [0.7, 1.5]`), `_sample_pause()` (scale `0.6780`, clip `[0.001, 4.00]`). Mỗi `speech_meta[i]` ghi `{timing, duration_sec}`; `meta.json` ghi `timing_config.{gap,pause,overlap_max_sec,user_interrupt_prob}` (thay `turn_gap_sec` cũ).
-  * **Tầng 2 neo backchannel:** `whisperx.align` lấy `all_words[word_idx]["end"]*TARGET_SR`, `place_backchannel` + cursor + `generate_delay(mode="backchannel")` delay 0. Chỉ phục vụ backchannel, khỏi can thiệp gap tầng 1.
+  * **Tầng 2 neo backchannel:** Qwen3 aligner lấy `all_words[word_idx]["end"]*TARGET_SR`, `place_backchannel` + cursor + `generate_delay(mode="backchannel")` delay 0. Chỉ phục vụ backchannel, khỏi can thiệp gap tầng 1.
   * **`[PAUSE]` token (Stage 1.75):** tách `tts_text` theo `[PAUSE]` → synth từng đoạn → chèn `_noise_floor_segment(_sample_intra_pause()*TARGET_SR)` giữa các đoạn (`timing="pause_token"`). `_sample_intra_pause()` Exponential scale `0.30`, clip `[0.10, 1.00]`. Fallback: `sanitize_text` cũng đổi `...`/`…` sót → `[PAUSE]`; token nằm trong `_INTENTIONAL_BRACKET_TOKENS`.
 * **Hậu xử lý âm thanh:** bỏ normalize per-câu, gap white-noise, LUFS `-23` toàn track (xem §7).
 
@@ -212,7 +212,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 * **Vòng lặp TTS `main_process` (`convert_spoken.py:784`):** `spk_offset` theo init speaker, `cumulative_prompt_paths` (OmniVoice: instruct strings; Chatterbox: wav copy), `speaker_ref[2]` (OmniVoice clone), `bc_cache` LRU, `bc_queue[2]`, `tts_texts[2]` buffer, `accumulated_flag[2]` (đợi backchannel xong mới flush), `interrupt_flag`. Duyệt `dialogue["utterances_with_bc"]` + `texts_styled`: nếu `cleaned_tts_text` rỗng/`-`/`...` → `isUttered False`; `prev_uttr_type==backchannel` thì append; `next_uttr_type==backchannel` thì `accumulated_flag True` và `continue`; else flush `tts_texts[curr_idx]` qua `_strip_paralinguistic` + `split_sentences` → mỗi `sentence_` gọi `generate_audio` (OmniVoice: `ref_audio/ref_text` nếu `speaker_ref` có else `instruct`; Chatterbox: `model.generate(text, audio_prompt_path)`), cache backchannel `bc_cache.get/put`, xử lý `VAD` cắt lặng, xử lý `empty audio` → silence 0.2s.
 * **Voice-clone load** `_load_voice_pool` (`convert_spoken.py:711`): `glob pool_dir/*.wav` + sidecar `<name>.txt`, `_load_omnivoice_ref_audio` mean mono + resample 24k + clamp 10s, cần >=2 items else `SystemExit`. `generate_audio` trả `[1,T]` float tensor, OmniVoice `wav.dim()==1 → unsqueeze(0)`.
 * **Delay & place:** `generate_delay` (`convert_spoken.py:590`) normal `loc 0.38 scale 0.2` (backchannel `0`, bc_mhm `0.13±0.02`), clip `0..pad_size`, trả `int(delay*TARGET_SR)`. `place_backchannel` (`convert_spoken.py:613`) grow cả 2 tracks nếu `start + len(bc)` vượt quá, `F.pad` white-noise gap trước đó đã tính.
-* **Resume & determinism:** `dialogue_rng = random.Random(stage5_tts.seed + zlib.crc32(fpath.name))` pick 2 voices, skip nếu `dialogue.wav+meta.json` tồn tại. `stage5_tts.device` truyền cho `load_align_model` và `whisperx.align` (VI đã fix, EN legacy vẫn `cuda`).
+* **Resume & determinism:** `dialogue_rng = random.Random(stage5_tts.seed + zlib.crc32(fpath.name))` pick 2 voices, skip nếu `dialogue.wav+meta.json` tồn tại. `stage5_tts.aligner.device` (mặc định `cuda`) truyền cho Qwen3 forced aligner.
 
 ---
 
@@ -259,7 +259,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 * **Giấy phép:** Code Apache-2.0 (`LICENSE:189` Vilex Authors based on DuplexGen), data kế thừa upstream (`docs/DATA_LICENSES.md`), audio Chatterbox MIT vendored `vilex/tts/chatterbox/`.
 * **Switchboard path (real-corpus branch):** `src/swbd_parse.py` parse `swb1_dialogact_annot` (`utt_re` bắt `da spkturn utt#: text`), `parse_file:49`, `clean_repairs_keep_both:26`, `clean_markup:32`. `extract_typed_boundaries_from_raw:100` + `merge_boundary_candidates_and_types:134` + `compute_candidates_with_gpt_and_heuristics:198` (LLM + heuristic). `convert_to_streaming_dialogue_json:299`: backchannel (`da` bắt đầu `b` hoặc `da == "%"` và `end != "-/"`) gắn `[BACKCHANNEL]` vào lượt cùng speaker, `end == "-/"` → append `[TAKE_FLOOR]`, gộp lượt liên tiếp cùng speaker, speaker `A→assistant`, `B→user`. `src/swbd_convert.py:41` chạy đa tiến trình `ProcessPoolExecutor` qua OpenAI client, in/out `swb1_dialogact_annot/` → `results/swb1_dialogact_annot`.
 * **Common Voice VI (local):** `data/vi-common-voice/` = cache Kaggle clip + TSV, nguồn build `voice_clone/` (§4.1).
-* **Kaggle:** `kaggle/vilex_kaggle.ipynb` full pipeline **2 phase bắt buộc** (1 interpreter: Stages1-4 `transformers>=4.53` xung đột Stage5 OmniVoice → restart kernel giữa phase); `kaggle/vilex_stage5_kaggle.ipynb` chỉ Stage 5 (Internet ON, GPU T4 x2, input = zip `data/vi_tt_bc` upload làm Dataset, `outputs/` nằm trong `.gitignore`).
+* **Kaggle:** `kaggle/vilex_kaggle.ipynb` full pipeline **2 phase bắt buộc** (1 interpreter: Stages1-4 `transformers>=4.53` xung đột Stage5 OmniVoice → restart kernel giữa phase); `kaggle/vilex_stage5_kaggle.ipynb` chỉ Stage 5 (Internet ON, GPU T4 x2, input = zip `data/vi_tt_bc` upload làm Dataset, `data/`+`outputs/` trong `.gitignore`). Notebook Stage-5 cài **lean** (bỏ `nemo-text-processing`, chỉ giữ nhánh OmniVoice/VI), tự dò `bc_root`/`voice_clone_pool`, `cp config_example.yaml config.yaml`, mặc định `save_align_json: true`; resume skip variant đã có `dialogue.wav`+`meta.json`(+`alignment_*.json`).
 
 ---
 
@@ -269,7 +269,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 
 1. **`src/speechify_core.py` + `src/synthesis/run.py:68`:** lọc bỏ turn role != `user`/`assistant` (system echo) — `continue` thay raise.
 2. **`src/gemini_client.py`:** fix `_create` thiếu `return`, thêm backoff 429 + global rate limiter `_MIN_INTERVAL=13.0` (5 req/phút) + parse `RetryInfo delay`.
-3. **`tts_render/convert_spoken.py` OmniVoice 0.2.1:** `OmniVoice.from_pretrained("k2-fsa/OmniVoice")` khỏi nhận `device=`; thêm `stage5_tts.device: cpu` default; `whisperx.align` VI path truyền `args.device` (trước hardcode `cuda` crash `Torch not compiled with CUDA enabled`).
+3. **`tts_render/convert_spoken.py` OmniVoice 0.2.1:** `OmniVoice.from_pretrained("k2-fsa/OmniVoice")` khỏi nhận `device=`; thêm `stage5_tts.device: cpu` default; Qwen3 aligner truyền `stage5_tts.aligner.device` (trước hardcode `cuda` crash `Torch not compiled with CUDA enabled`).
 4. **VAD trim rỗng:** câu ngắn `"Ừm,"`/`"À,"` VAD `end≈0` → `speech_[:, :0]` rỗng → `normalize_audio` crash `max()`. Guard chỉ cắt khi `0 < end < len`, `normalize_audio` return nếu rỗng, `generate_audio` trả silence 0.2s + warning.
 5. **Paralinguistic tag:** `[laughter]/[question-en]/...` bị checkpoint 0.2.1 đọc thành tiếng nên mặc định bị strip trước `generate()` (`_strip_paralinguistic`). **`stage5_tts.tags.render` (default false):** khi bật, giữ 13 tag hợp lệ (`RENDERABLE_TAGS`) cho OmniVoice render thành âm thanh; strip tag lạ (ngoài whitelist, trừ `[PAUSE]`). Align/word-count + `ref_text` luôn strip. Tag có gạch nối (`[question-ah]`) được bảo vệ khỏi `replace("-"," ")` bởi `_replace_dashes_outside_brackets`. Text chỉ còn tag (tag-only) → phát 0.2s silence thay vì `torch.cat([])` crash.
 6. **Log ồn:** `TQDM_DISABLE=1/TRANSFORMERS_SILENT/HF_HUB_VERBOSITY=error` trước import + `logging.Filter` drop `HTTP Request`/`unauthenticated` + `httpx/huggingface_hub→ERROR` + `tqdm.disable` + `warnings.filterwarnings`.
@@ -344,4 +344,4 @@ python tts_render/convert_spoken.py
 * [ ] Khỏi commit secret `gen-lang-client*.json` / `*sa.json` (gitignore `.gitignore:36`), khỏi git ops nếu RULE cấm.
 * [ ] Verify sau sửa: `pytest -q` (170 passed, 1 skipped), `grep duplexgen` sạch, `py_compile` entry points (`src.speechify_run`, `src.cross_turn_slots`, `src.disfluency`, `src.synthesis.run`, `tts_render/convert_spoken.py`).
 
-*Appendix nguồn:* Overview.md:1-8, 19-54, 56-65, 88-172, 284-431 + Session.md fix 2026-08-26/27 (VAD, whisperx device, paralinguistic, LUFS, voice-clone deterministic) + code 2026-09 (Stage 1.5/1.75, build_voice_clone_pool + Whisper ASR OpenAPI, prepare_corpus, hf_attn, swbd_parse/convert, Kaggle 2-phase).
+*Appendix nguồn:* Overview.md:1-8, 19-54, 56-65, 88-172, 284-431 + Session.md fix 2026-08-26/27 (VAD, aligner device, paralinguistic, LUFS, voice-clone deterministic) + code 2026-09 (Stage 1.5/1.75, build_voice_clone_pool + Whisper ASR OpenAPI, prepare_corpus, hf_attn, swbd_parse/convert, Kaggle 2-phase).

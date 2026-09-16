@@ -128,6 +128,65 @@ def split_in_halves(items: list, budget: SampleBudget) -> List[Tuple[str, list]]
     return [("train", picked[:mid]), ("test", picked[mid:])]
 
 
+def _history_to_turns(history) -> List[Tuple[str, str]]:
+    """Coerce a parsed_source `history` into (role, content) turns.
+
+    `--test-parse` / tools/parquet_source.py serialize turns as `[role, content]`
+    pairs; a hand-edited dump may use `{"role", "content"}` dicts. Both work.
+    """
+    turns: List[Tuple[str, str]] = []
+    for item in history or []:
+        if isinstance(item, dict):
+            role, content = item.get("role"), item.get("content", "")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            role, content = item[0], item[1]
+        else:
+            continue
+        content = (content or "").strip()
+        if role and content:
+            turns.append((role, content))
+    return turns
+
+
+def _iter_parsed_source(root: str, dataset_name: str, split: str, limit: Optional[int] = None):
+    """Yield (example_id, turns, context) from `<root>/<dataset>/<split>/*.json`.
+
+    Offline counterpart of the raw/Hub loaders: reads the per-dialogue JSON that
+    `--test-parse` (or `tools/parquet_source.py`) wrote, so Stage 1 can convert
+    with no raw corpus and no Hugging Face access. Sampling uses even spacing over
+    the sorted file list, so a small budget still spans the whole split without
+    parsing every file.
+    """
+    if not root:
+        print("[WARN] parsed_source: paths.parsed_source_root is empty")
+        return
+    split_dir = Path(root) / dataset_name / split
+    if not split_dir.is_dir():
+        print(f"[WARN] parsed_source: no {split_dir} (dataset/split not materialized)")
+        return
+    files = sorted(split_dir.glob("*.json"))
+    for i in get_sampled_indices(len(files), limit):
+        path = files[i]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[WARN] parsed_source: skipping {path.name}: {exc}")
+            continue
+        turns = _history_to_turns(data.get("history"))
+        if not turns:
+            continue
+        yield data.get("example_id") or path.stem, turns, data.get("context", "")
+
+
+def split_by_parsed_source(dataset_name: str, args, budget: SampleBudget) -> List[Tuple[str, list]]:
+    """Strategy 4: read the offline parsed_source dump for every split."""
+    root = getattr(args, "parsed_source_root", "data/parsed_source")
+    return [
+        (split, list(_iter_parsed_source(root, dataset_name, split, budget.for_split(split))))
+        for split in SPLITS
+    ]
+
+
 def _dataset_input_path(dataset_name: str, args) -> str:
     """Single-file override for one dataset, with the global path as fallback.
 
@@ -195,6 +254,11 @@ def write_json(path: Path, obj: dict) -> None:
 def get_iterators(dataset_name: str, args, client) -> List[Tuple[str, list]]:
     """Return [(split_name, samples)], each already cut to the sample budget."""
     budget = SampleBudget.from_args(args)
+
+    # Offline mode: read the materialized parsed_source dump instead of the raw
+    # corpus / HF Hub, for every dataset (including interviewer and soda).
+    if getattr(args, "source", "auto") == "parsed_source":
+        return split_by_parsed_source(dataset_name, args, budget)
 
     if dataset_name in SEPARATE_FILE_LOADERS:
         return split_by_file(dataset_name, args, budget)
@@ -313,6 +377,8 @@ def _build_args(cfg, split_label):
         data_root=paths.get("data_root") or None,
         input_path=paths.get("input_path") or None,
         input_paths=paths.get("input_paths") or {},
+        source=paths.get("source", "auto"),
+        parsed_source_root=paths.get("parsed_source_root", "data/parsed_source"),
         save_dir=paths.get("results_root", "data/results_vi"),
         split=split_label,
         max_train_samples=s1.get("max_train_samples", DEFAULT_SAMPLES_PER_SPLIT),

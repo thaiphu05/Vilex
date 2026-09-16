@@ -62,9 +62,17 @@ pip install -r requirements-stage5.txt
 
 - **Gemini models** (`gemini-*`): Google GenAI OpenAI-compat, `GEMINI_API_KEY` or service-account JSON. **Default for Vilex.**
 - **OpenAI models** (`gpt-*`, `o1`, `o3`, `o4`): `OPENAI_API_KEY`.
-- **Open-weight models** (`Qwen/...`): self-hosted at `llm.base_url` (default `localhost:8000`).
+- **Everything else** (self-hosted `Qwen/...`, `DeepSeek-...`, any served model): posted to the OpenAI-compatible `llm.base_url` with `llm.api_key` (sent as `Authorization: Bearer`). Because routing keys off the name, a served model name must not contain `gemini` or start with `gpt-`/`o1|o3|o4`.
 
-Stage 4 has three independent LLM roles: `llm.writer_model` (writer), `llm.boundary_model` (slot detection), `llm.tt_model` (turn-taking predictor). Or set `stage4_synthesis.hf_model_name_or_path` for the Stage 3 LoRA predictor.
+Set **one** served model for every role with three keys; per-role keys override it:
+```yaml
+llm:
+  base_url: http://host:8000/v1
+  api_key: <key>
+  model: DeepSeek-V4-Flash   # used by writer / boundary / tt / bc
+```
+
+Stage 4 has three independent LLM roles: `llm.writer_model` (writer), `llm.boundary_model` (slot detection), `llm.tt_model` (turn-taking predictor); each falls back to `llm.model`. Or set `stage4_synthesis.hf_model_name_or_path` for the Stage 3 LoRA predictor.
 
 Defaults are now Vietnamese: `run.target_language: vi`, `stage5_tts.backend: omnivoice`, `stage5_tts.language: vi`. For English set `VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_TTS__BACKEND=chatterbox VILEX_STAGE5_TTS__LANGUAGE=en`.
 

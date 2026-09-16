@@ -49,14 +49,24 @@ Secrets stay in the environment and are **never** read from the YAML:
 | Section | Controls |
 |---|---|
 | `run` | `seed`, `datasets`, `splits`, `target_language`, `dry_run`, `test_parse` |
-| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`, `logdir`) |
-| `llm` | model names per role (writer / boundary / tt / bc), `base_url`s, `api_key`, `temperature`, `gemini_min_interval`, `gemini_location` |
+| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `source` + `parsed_source_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`, `logdir`) |
+| `llm` | shared `model` + per-role overrides (writer / boundary / tt / bc), `base_url` + `bc_base_url` / `boundary_base_url`, `api_key` + `boundary_api_key`, `temperature`, `gemini_min_interval`, `gemini_location` |
 | `stage1_speechify` | sample budgets, `max_variants`, `interviewer_subset`, `temperature`, `concise` |
 | `stage1_5_cross_turn` | `perror`, `seed`, `roles`, `min_digits`, `min_code_len` |
 | `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |
 | `stage4_synthesis` | `max_turns`, `max_dialogues`, `max_workers`, temperatures, `guards`, `ft_terminal_punct`, `hesitations`, `judge`, `hf` |
 | `stage4b_backchannel` | `max_tokens`, `temperature`, `max_retries`, `valid_max_words`, fallback pools |
-| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `aligner` (`model`/`dtype`/`device`, Qwen3 forced aligner), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+
+### Offline Stage 1 source (`paths.source` / `paths.parsed_source_root`)
+
+`paths.source: parsed_source` makes Stage 1 read the materialized dump at
+`<paths.parsed_source_root>/<dataset>/<split>/*.json` for **every** dataset —
+including `interviewer`/`soda`, which otherwise hit the HF Hub. No HF access,
+no `paths.data_root`, no `paths.input_paths`. Each split is sampled at even
+spacing with `stage1_speechify.max_train_samples` / `max_test_samples`, so a
+small budget never parses a whole split (SODA is ~1.19M files). Default is
+`auto` (raw corpora / Hub).
 
 ### Single-file corpora (`paths.input_path` / `paths.input_paths`)
 
