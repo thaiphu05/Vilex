@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any
 from tqdm import tqdm
 
-from src.config import cfg_get, load_config
+from src.config import cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client, no_thinking_extra_body
 
 # ================================
@@ -247,8 +247,8 @@ def configure(cfg):
     s4b = cfg_get(cfg, "stage4b_backchannel", {})
     paths = cfg_get(cfg, "paths", {})
 
-    MODEL_NAME = llm.get("bc_model", MODEL_NAME)
-    BASE_URL = llm.get("bc_base_url", BASE_URL)
+    MODEL_NAME = resolve_llm_model(llm, "bc_model", MODEL_NAME)
+    BASE_URL = llm.get("bc_base_url") or llm.get("base_url") or BASE_URL
     API_KEY = llm.get("api_key", API_KEY)
     PROMPT_KIND = s4b.get("prompt_kind", PROMPT_KIND)
     TARGET_LANGUAGE = cfg_get(cfg, "run.target_language", TARGET_LANGUAGE)

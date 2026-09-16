@@ -131,3 +131,16 @@ def cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
             return default
         node = node[part]
     return node
+
+
+def resolve_llm_model(llm_cfg: Optional[Dict[str, Any]], role_key: str, default: str) -> str:
+    """Pick the model for one LLM role.
+
+    Resolution order: the role-specific key (``writer_model`` ...), then the
+    shared ``llm.model``, then the caller's in-code ``default``. This lets a user
+    point every role at one served model by setting only ``llm.model`` (plus
+    ``llm.base_url`` / ``llm.api_key``) and override individual roles only when
+    they actually need to differ.
+    """
+    llm_cfg = llm_cfg or {}
+    return llm_cfg.get(role_key) or llm_cfg.get("model") or default

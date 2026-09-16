@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.config import REPO_ROOT, cfg_get, load_config  # noqa: E402
+from src.config import REPO_ROOT, cfg_get, load_config, resolve_llm_model  # noqa: E402
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -81,3 +81,20 @@ def test_repo_config_declares_every_stage_section():
         "stage5_tts",
     ):
         assert key in cfg, f"config_example.yaml is missing the {key!r} section"
+
+
+def test_resolve_llm_model_role_key_wins():
+    llm = {"model": "shared", "writer_model": "writer-only"}
+    assert resolve_llm_model(llm, "writer_model", "fallback") == "writer-only"
+
+
+def test_resolve_llm_model_falls_back_to_shared_model():
+    llm = {"model": "DeepSeek-V4-Flash", "writer_model": ""}
+    assert resolve_llm_model(llm, "writer_model", "fallback") == "DeepSeek-V4-Flash"
+    assert resolve_llm_model({"model": "x"}, "boundary_model", "fallback") == "x"
+
+
+def test_resolve_llm_model_falls_back_to_default():
+    assert resolve_llm_model({}, "tt_model", "in-code") == "in-code"
+    assert resolve_llm_model(None, "tt_model", "in-code") == "in-code"
+    assert resolve_llm_model({"writer_model": ""}, "writer_model", "in-code") == "in-code"

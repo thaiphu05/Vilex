@@ -343,3 +343,26 @@ def test_stage1_prompt_controls_ellipsis():
     for prompt in (SINGLE_STEP_CONVERSION_PROMPT, SINGLE_STEP_CONVERSION_PROMPT_CONCISE):
         assert "Hesitation pauses" in prompt
         assert 'Use "..."' in prompt
+
+
+def test_stage4_boundary_role_uses_the_configured_endpoint():
+    """The boundary detector must share llm.base_url/api_key.
+
+    Leaving them None (the old hardcode) sent every boundary call to
+    api.openai.com even when the user pointed llm.base_url at a served model.
+    """
+    src = (ROOT / "src/synthesis/run.py").read_text()
+    tree = ast.parse(src)
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_build_args"
+    )
+    ns_kwargs = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "SimpleNamespace":
+            ns_kwargs = {k.arg: k.value for k in node.keywords}
+    for key in ("boundary_base_url", "boundary_api_key"):
+        assert key in ns_kwargs, f"_build_args no longer sets {key}"
+        val = ns_kwargs[key]
+        assert not (
+            isinstance(val, ast.Constant) and val.value is None
+        ), f"{key} is hardcoded None; boundary calls would hit api.openai.com"

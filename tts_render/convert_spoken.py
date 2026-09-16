@@ -2,7 +2,7 @@ import os
 
 # Quiet third-party model-loading noise (HF Hub API 404s, "unauthenticated
 # requests" warning, transformers LOAD REPORT, httpx request lines, tqdm bars).
-# Must be set BEFORE whisperx/transformers are imported below.
+# Must be set BEFORE transformers/OmniVoice are imported below.
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TRANSFORMERS_SILENT", "yes")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
@@ -28,7 +28,6 @@ import tempfile
 import zlib
 from pathlib import Path
 from silero_vad import load_silero_vad, get_speech_timestamps
-import whisperx
 from glob import glob
 import copy
 
@@ -53,6 +52,13 @@ RENDER_TAGS = False
 # When True (stage5_tts.audio.save_align_json) write per-variant word-level
 # forced-alignment JSON (alignment_user.json / alignment_assistant.json).
 SAVE_ALIGN_JSON = False
+# Forced aligner (stage5_tts.aligner.*): Qwen3-ForcedAligner gives word-level
+# timestamps for a known transcript, used to anchor backchannels to word-ends
+# and to build the alignment JSON. dtype "auto" -> bfloat16 on GPUs that support
+# it, else float16.
+ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+ALIGNER_DTYPE = "auto"
+ALIGNER_DEVICE = "cuda"
 # Per-speaker voice-design instructs for OmniVoice (index 0=user, 1=assistant).
 OMNI_INSTRUCTS = ["male, northern accent", "female, gentle"]
 
@@ -919,37 +925,100 @@ def _save_cumulative_prompt(audio: torch.Tensor, path: str):
     torchaudio.save(path, trimmed, TARGET_SR)
 
 
-def _align_words_once(align_model, align_meta, audio, text, device):
-    """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels).
+def _resolve_aligner_dtype(dtype_name, device):
+    """Map stage5_tts.aligner.dtype to a torch dtype.
 
-    Returns a list of ``{word, start, end, score}`` with times relative to the
-    start of ``audio``; ``[]`` when alignment fails or yields no words.
+    ``auto`` picks bfloat16 when the GPU supports it (Ampere+) and float16
+    otherwise (e.g. T4/Turing), so the aligner never crashes on a bf16-less box.
+    """
+    if dtype_name in ("auto", "", None):
+        if device == "cuda" and torch.cuda.is_available():
+            try:
+                major, _ = torch.cuda.get_device_capability()
+                return torch.bfloat16 if major >= 8 else torch.float16
+            except Exception:  # pragma: no cover - defensive
+                return torch.float16
+        return torch.float32
+    return {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }.get(str(dtype_name).lower(), torch.float32)
+
+
+def _load_forced_aligner(model_id=None, dtype_name=None, device=None):
+    """Load the Qwen3-ForcedAligner (processor + model) for word timestamps.
+
+    Defaults are resolved from the module globals at call time (not def time) so
+    the config values applied by ``_apply_tts_config`` actually take effect.
+    Imported lazily so the Chatterbox-only environment does not need transformers
+    at module import time.
+    """
+    from transformers import AutoModelForTokenClassification, AutoProcessor
+
+    model_id = model_id or ALIGNER_MODEL
+    dtype_name = dtype_name or ALIGNER_DTYPE
+    device = device or ALIGNER_DEVICE
+    torch_dtype = _resolve_aligner_dtype(dtype_name, device)
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = AutoModelForTokenClassification.from_pretrained(model_id, dtype=torch_dtype)
+    model = model.to(device)
+    model.eval()
+    logging.info("Loaded forced aligner %s (dtype=%s device=%s)", model_id, torch_dtype, device)
+    return {"processor": processor, "model": model}
+
+
+def _timestamps_to_words(stamps):
+    """Normalise aligner output dicts into ``{word, start, end}`` records."""
+    words = []
+    for item in stamps or []:
+        if "start_time" not in item or "end_time" not in item:
+            continue
+        words.append(
+            {
+                "word": item.get("text", ""),
+                "start": float(item["start_time"]),
+                "end": float(item["end_time"]),
+            }
+        )
+    return words
+
+
+def _align_words_once(align, audio, text):
+    """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels) with Qwen3.
+
+    Returns a list of ``{word, start, end}`` with times relative to the start of
+    ``audio``; ``[]`` when alignment fails or yields no words.
     """
     text = (text or "").strip()
     if not text or audio.numel() == 0:
         return []
-    audio_16k = torchaudio.transforms.Resample(orig_freq=TARGET_SR, new_freq=PROMPT_SR)(audio)
-    segments = [{"text": " " + text, "start": 0.0, "end": audio.size(1) / TARGET_SR}]
+    # Mono float32 at 16 kHz (the feature extractor's rate), regardless of how
+    # many channels the TTS output stacked.
+    mono = audio.mean(dim=0, keepdim=True)
+    audio_16k = torchaudio.transforms.Resample(orig_freq=TARGET_SR, new_freq=PROMPT_SR)(mono)
+    wav = audio_16k.squeeze(0).numpy().astype(np.float32)
     try:
-        result = whisperx.align(
-            segments, align_model, align_meta, audio_16k, device, return_char_alignments=False
+        inputs, word_lists = align["processor"].prepare_forced_aligner_inputs(
+            audio=wav, transcript=text, language=None
         )
+        model = align["model"]
+        inputs = inputs.to(model.device, model.dtype)
+        with torch.inference_mode():
+            outputs = model(**inputs)
+        stamps = align["processor"].decode_forced_alignment(
+            logits=outputs.logits,
+            input_ids=inputs["input_ids"],
+            word_lists=word_lists,
+            timestamp_token_id=model.config.timestamp_token_id,
+        )[0]
     except Exception as exc:  # pragma: no cover - defensive
         logging.warning("Alignment failed for %r: %s", text[:40], exc)
         return []
-    words = []
-    for segment in result.get("segments", []):
-        for w in segment.get("words", []):
-            if "start" in w and "end" in w:
-                words.append(
-                    {
-                        "word": w.get("word", ""),
-                        "start": float(w["start"]),
-                        "end": float(w["end"]),
-                        "score": w.get("score"),
-                    }
-                )
-    return words
+    return _timestamps_to_words(stamps)
 
 
 def _even_words(text, start_sec, end_sec):
@@ -963,7 +1032,6 @@ def _even_words(text, start_sec, end_sec):
             "word": tok,
             "start": start_sec + i * width,
             "end": start_sec + (i + 1) * width,
-            "score": None,
         }
         for i, tok in enumerate(tokens)
     ]
@@ -1007,7 +1075,6 @@ def _build_alignment_payloads(dialogue_id, variant_idx, speech_meta, align, tota
                         "word": w["word"],
                         "start": round(start_sec + w["start"], 4),
                         "end": round(start_sec + w["end"], 4),
-                        "score": w.get("score"),
                     }
                     for w in rec["words"]
                 ],
@@ -1024,7 +1091,6 @@ def _build_alignment_payloads(dialogue_id, variant_idx, speech_meta, align, tota
                     "word": w["word"],
                     "start": round(start_sec + w["start"], 4),
                     "end": round(start_sec + w["end"], 4),
-                    "score": w.get("score"),
                 }
                 for w in rec["words"]
             ]
@@ -1034,7 +1100,6 @@ def _build_alignment_payloads(dialogue_id, variant_idx, speech_meta, align, tota
                     "word": w["word"],
                     "start": round(w["start"], 4),
                     "end": round(w["end"], 4),
-                    "score": None,
                 }
                 for w in _even_words(rec["text"], start_sec, end_sec)
             ]
@@ -1058,9 +1123,6 @@ def main_process(
     model, vad_model, align, args, index, origin_dialogue, prompt_paths, tmpdir,
     normalizer=None, speaker_refs=None,
 ):
-    model_a = align["model_a"]
-    metadata = align["metadata"]
-
     dialogue = copy.deepcopy(origin_dialogue)
 
     total_speech = []
@@ -1374,9 +1436,7 @@ def main_process(
                     else:
                         tts_text_for_align = _strip_paralinguistic(tts_text)
                     tts_text_for_align = tts_text_for_align.replace("[PAUSE]", " ").strip()
-                    all_words = _align_words_once(
-                        model_a, metadata, tts_speech, tts_text_for_align, args.device
-                    )
+                    all_words = _align_words_once(align, tts_speech, tts_text_for_align)
                     if SAVE_ALIGN_JSON:
                         align_utt.append(
                             {
@@ -1447,9 +1507,7 @@ def main_process(
                             # Only multi-word backchannels are worth aligning; a
                             # single-word BC spans its whole clip.
                             bc_words = (
-                                _align_words_once(
-                                    model_a, metadata, bc_speech, bc_text, args.device
-                                )
+                                _align_words_once(align, bc_speech, bc_text)
                                 if len(bc_text.split()) > 1
                                 else []
                             )
@@ -1525,6 +1583,7 @@ def _apply_tts_config(cfg):
     global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
     global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON
+    global ALIGNER_MODEL, ALIGNER_DTYPE, ALIGNER_DEVICE
     global OMNI_PARALINGUIST_TAGS, RENDERABLE_TAGS, _PARALINGUIST_RE
     global DEFAULT_BC_CANDIDATES, DEFAULT_BC_CANDIDATES_VI, _BC_RISING_TOKENS
 
@@ -1533,6 +1592,7 @@ def _apply_tts_config(cfg):
     audio = s5.get("audio", {}) if isinstance(s5.get("audio"), dict) else {}
     tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
     bc = s5.get("backchannels", {}) if isinstance(s5.get("backchannels"), dict) else {}
+    aligner = s5.get("aligner", {}) if isinstance(s5.get("aligner"), dict) else {}
 
     TARGET_SR = s5.get("target_sr", TARGET_SR)
     PROMPT_SR = s5.get("prompt_sr", PROMPT_SR)
@@ -1561,6 +1621,10 @@ def _apply_tts_config(cfg):
     TARGET_LUFS = audio.get("target_lufs", TARGET_LUFS)
     NOISE_FLOOR_AMP = audio.get("noise_floor_amp", NOISE_FLOOR_AMP)
     SAVE_ALIGN_JSON = bool(audio.get("save_align_json", SAVE_ALIGN_JSON))
+
+    ALIGNER_MODEL = aligner.get("model") or ALIGNER_MODEL
+    ALIGNER_DTYPE = aligner.get("dtype") or ALIGNER_DTYPE
+    ALIGNER_DEVICE = aligner.get("device") or s5.get("device", ALIGNER_DEVICE)
 
     supported = tags.get("supported")
     if isinstance(supported, list) and supported:
@@ -1620,15 +1684,15 @@ def main(args):
     if TTS_BACKEND == "omnivoice":
         OMNI_INSTRUCTS = [args.omnivoice_user_instruct, args.omnivoice_assistant_instruct]
 
-    # force=True: importing whisperx/numba/nemo installs root handlers of their
+    # force=True: importing transformers/nemo installs root handlers of their
     # own, and without it basicConfig() is a silent no-op -- which used to leave
     # the run at DEBUG, burying the per-dialogue progress under megabytes of
-    # numba IR dumps and urllib3 chatter.
+    # library chatter.
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", force=True
     )
 
-    # Suppress noisy third-party logs emitted while whisperx/OmniVoice load models.
+    # Suppress noisy third-party logs emitted while OmniVoice/transformers load models.
     # Env vars above (set before imports) handle tqdm / transformers / HF Hub; here we
     # also drop any residual records by content and silence the named loggers.
     try:
@@ -1659,9 +1723,9 @@ def main(args):
         "ignore", message=".*unauthenticated requests to the HF Hub.*"
     )
 
-    # Resolve every input before touching a GPU: loading Chatterbox, whisperx and the
-    # NeMo grammars costs a couple of minutes, and a bad paths.bc_root or a missing
-    # prompt wav should not cost that before it is reported.
+    # Resolve every input before touching a GPU: loading Chatterbox, the forced
+    # aligner and the NeMo grammars costs a couple of minutes, and a bad
+    # paths.bc_root or a missing prompt wav should not cost that before it is reported.
     assistant_prompt_path = (
         load_assistant_prompt_path(args.prompt_dir) if TTS_BACKEND == "chatterbox" else None
     )
@@ -1753,18 +1817,15 @@ def main(args):
         if device == "cuda":
             model = model.cuda()
         TARGET_SR = 24000  # OmniVoice operates at 24 kHz
-        align_lang = "vi" if TTS_LANGUAGE.lower().startswith("vi") else "en"
-        model_a, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
-        align = {"model_a": model_a, "metadata": metadata}
+        align = _load_forced_aligner()
         normalizer = None  # OmniVoice normalizes internally; skip NeMo
-        logging.info("Loaded OmniVoice (Vietnamese) backend; whisperx align lang=%s", align_lang)
+        logging.info("Loaded OmniVoice (Vietnamese) backend; Qwen3 forced aligner ready")
     else:
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         model = ChatterboxTurboTTS.from_pretrained(device="cuda")
         TARGET_SR = model.sr
-        model_a, metadata = whisperx.load_align_model(language_code="en", device="cuda")
-        align = {"model_a": model_a, "metadata": metadata}
+        align = _load_forced_aligner(device="cuda")
         # Lazy import: NeMo is only needed for the English path and is not installed
         # in the OmniVoice environment.
         try:

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from tqdm import tqdm
 from openai import OpenAI
 
-from src.config import cfg_get, load_config
+from src.config import cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client
 from src.speechify_datasets import (
     iter_negotiator,
@@ -319,7 +319,7 @@ def _build_args(cfg, split_label):
         max_test_samples=s1.get("max_test_samples", DEFAULT_SAMPLES_PER_SPLIT),
         max_variants=s1.get("max_variants", 1),
         interviewer_subset=s1.get("interviewer_subset", "workforce"),
-        llm_model_name=llm.get("writer_model", "gemini-3.6-flash"),
+        llm_model_name=resolve_llm_model(llm, "writer_model", "gemini-3.6-flash"),
         target_language=cfg_get(cfg, "run.target_language", "vi"),
         temperature=s1.get("temperature", llm.get("temperature", 0.7)),
         api_key=llm.get("api_key", "EMPTY"),

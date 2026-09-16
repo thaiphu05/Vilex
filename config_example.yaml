@@ -43,14 +43,21 @@ paths:
   logdir: data/logs
 
 # ---------------------------------------------------------------- llm routing
+# Point every role at one served model with just base_url + api_key + model.
+# Role-specific keys override `model`; leave them empty to inherit it.
+# The backend is chosen by the model NAME: `gemini-*` -> Google, `gpt-*`/`o1..o4`
+# -> api.openai.com, anything else -> base_url (OpenAI-compatible, e.g. vLLM).
 llm:
-  writer_model: gemini-3.6-flash
-  boundary_model: gemini-3.6-flash
-  tt_model: gemini-3.6-flash
-  bc_model: gemini-3.6-flash
-  base_url: http://localhost:8000/v1     # self-hosted (Qwen/...)
-  bc_base_url: http://localhost:8008/v1  # Stage 4b backchannel endpoint
-  api_key: EMPTY
+  model: gemini-3.6-flash                # shared default for all four roles
+  writer_model: ""                       # "" -> inherit llm.model
+  boundary_model: ""
+  tt_model: ""
+  bc_model: ""
+  base_url: http://localhost:8000/v1     # self-hosted (Qwen/...); e.g. http://host/v1
+  bc_base_url: ""                        # "" -> inherit base_url
+  api_key: EMPTY                         # sent as Authorization: Bearer
+  boundary_api_key: ""                   # "" -> inherit api_key
+  boundary_base_url: ""                  # "" -> inherit base_url
   temperature: 0.7
   gemini_min_interval: 2.0               # seconds between Gemini calls (rate limit)
   gemini_location: global                # Vertex AI region
@@ -176,10 +183,15 @@ stage5_tts:
     max_prompt_secs: 10
     # Write per-variant word-level forced-alignment JSON for training on timestamps:
     #   alignment_user.json + alignment_assistant.json (absolute times in the merged
-    #   timeline; utterances from whisperx.align, backchannels from alignment when
-    #   >1 word else an even split of the clip span). Enabling it makes the align
-    #   files part of the resume/skip check, so existing variants are re-rendered.
+    #   timeline; utterances from the Qwen3 forced aligner, backchannels from
+    #   alignment when >1 word else an even split of the clip span). Enabling it
+    #   makes the align files part of the resume/skip check, so existing variants
+    #   are re-rendered.
     save_align_json: false
+  aligner:                    # Qwen3-ForcedAligner: word timestamps for BC anchoring
+    model: Qwen/Qwen3-ForcedAligner-0.6B-hf
+    dtype: auto               # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
+    device: cuda              # cuda | cpu (falls back to stage5_tts.device if omitted)
   voice:
     user_instruct: "male, northern accent"
     assistant_instruct: "female, gentle"

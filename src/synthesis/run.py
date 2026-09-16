@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 # Note: build_boundary_annotation_queue is removed as the new logic
 # handles detection dynamically within speechify_turn_by_turn
-from src.config import cfg_get, load_config
+from src.config import cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client
 from src.synthesis.core import speechify_turn_by_turn
 from src.synthesis.prompts import _normalize_ws
@@ -104,13 +104,16 @@ def _build_args(cfg):
         input_root=paths.get("results_dis_root", "data/results_vi_dis"),
         save_root=paths.get("synthesis_root", "data/vi_tt"),
         max_dialogues=s4.get("max_dialogues", 1000),
-        llm_model_name=llm.get("writer_model", "gpt-4.1"),
+        llm_model_name=resolve_llm_model(llm, "writer_model", "gpt-4.1"),
         api_key=llm.get("api_key", "EMPTY"),
         base_url=llm.get("base_url", "http://localhost:8000/v1"),
-        boundary_model_name=llm.get("boundary_model", "gpt-4.1-mini"),
-        boundary_api_key=None,
-        boundary_base_url=None,
-        tt_model_name=llm.get("tt_model", "Qwen/Qwen3-14B"),
+        boundary_model_name=resolve_llm_model(llm, "boundary_model", "gpt-4.1-mini"),
+        # The boundary role shares the served endpoint unless it gets its own:
+        # leaving these None made make_client() fall back to api.openai.com.
+        boundary_api_key=llm.get("boundary_api_key") or llm.get("api_key", "EMPTY"),
+        boundary_base_url=llm.get("boundary_base_url")
+        or llm.get("base_url", "http://localhost:8000/v1"),
+        tt_model_name=resolve_llm_model(llm, "tt_model", "Qwen/Qwen3-14B"),
         tt_api_key=llm.get("api_key", "EMPTY"),
         tt_base_url=llm.get("base_url", "http://localhost:8000/v1"),
         hf_model_name_or_path=s4.get("hf_model_name_or_path"),

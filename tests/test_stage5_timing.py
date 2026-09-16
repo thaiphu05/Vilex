@@ -1,8 +1,10 @@
 """Tests for Stage 5 sampled GAP / PAUSE timing distributions.
 
 Covers `_sample_gap`, `_sample_pause`, and the timing labels that
-`aggregate_speech` writes onto `speech_meta` entries. The TTS model and
-WhisperX alignment are not exercised -- only the timing math.
+`aggregate_speech` writes onto `speech_meta` entries, plus the pure alignment
+helpers (`_timestamps_to_words`, `_even_words`, `_build_alignment_payloads`).
+The TTS model and the Qwen3 forced aligner are not exercised -- only the timing
+and timestamp-mapping math.
 """
 
 import random
@@ -31,9 +33,11 @@ from tts_render.convert_spoken import (  # noqa: E402
     _INTENTIONAL_BRACKET_TOKENS,
     _build_alignment_payloads,
     _even_words,
+    _resolve_aligner_dtype,
     _sample_gap,
     _sample_intra_pause,
     _sample_pause,
+    _timestamps_to_words,
     aggregate_speech,
 )
 
@@ -236,10 +240,42 @@ class TestEvenWords:
         assert [w["word"] for w in words] == ["xin", "chào", "bạn"]
         assert words[0]["start"] == 1.0
         assert words[-1]["end"] == 4.0
-        assert all(w["score"] is None for w in words)
+        assert all(set(w) == {"word", "start", "end"} for w in words)
 
     def test_empty_text(self):
         assert _even_words("", 0.0, 1.0) == []
+
+
+class TestTimestampsToWords:
+    def test_maps_aligner_output_without_score(self):
+        stamps = [
+            {"text": "xin", "start_time": 0.0, "end_time": 0.5},
+            {"text": "chào", "start_time": 0.5, "end_time": 1.2},
+        ]
+        words = _timestamps_to_words(stamps)
+        assert words == [
+            {"word": "xin", "start": 0.0, "end": 0.5},
+            {"word": "chào", "start": 0.5, "end": 1.2},
+        ]
+        assert all("score" not in w for w in words)
+
+    def test_skips_entries_without_times(self):
+        assert _timestamps_to_words([{"text": "x"}, {}]) == []
+        assert _timestamps_to_words(None) == []
+
+
+class TestResolveAlignerDtype:
+    def test_explicit_names(self):
+        import torch
+
+        assert _resolve_aligner_dtype("float32", "cpu") is torch.float32
+        assert _resolve_aligner_dtype("fp16", "cpu") is torch.float16
+        assert _resolve_aligner_dtype("bfloat16", "cpu") is torch.bfloat16
+
+    def test_auto_defaults_to_float32_on_cpu(self):
+        import torch
+
+        assert _resolve_aligner_dtype("auto", "cpu") is torch.float32
 
 
 class TestAlignmentPayloads:
@@ -257,7 +293,7 @@ class TestAlignmentPayloads:
                     "host_idx": 0,
                     "speaker": 0,
                     "text": "xin chào",
-                    "words": [{"word": "xin", "start": 0.0, "end": 0.5, "score": 0.9}],
+                    "words": [{"word": "xin", "start": 0.0, "end": 0.5}],
                 },
                 {
                     "host_idx": 1,

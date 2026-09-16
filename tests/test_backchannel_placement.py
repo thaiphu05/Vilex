@@ -12,7 +12,7 @@ def _load_placement():
     """Load generate_delay and place_backchannel without importing convert_spoken.
 
     convert_spoken.py calls nltk.download() at import time and pulls in
-    whisperx/nemo, so it cannot be imported in a unit test. We exec only the
+    transformers/nemo, so it cannot be imported in a unit test. We exec only the
     functions under test from source.
     """
     src = (REPO / "tts_render" / "convert_spoken.py").read_text()

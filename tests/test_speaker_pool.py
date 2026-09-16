@@ -9,7 +9,7 @@ def _load_module():
     """Load list_librispeech_speakers without importing convert_spoken.
 
     convert_spoken.py calls nltk.download() at import time and pulls in
-    whisperx/nemo, so it cannot be imported in a unit test. We exec only the
+    transformers/nemo, so it cannot be imported in a unit test. We exec only the
     function under test from source.
     """
     src = (REPO / "tts_render" / "convert_spoken.py").read_text()
