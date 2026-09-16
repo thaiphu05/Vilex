@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 from tqdm import tqdm
 from openai import OpenAI
 
-from src.config import cfg_get, load_config, resolve_llm_model
+from src.config import apply_runtime_config, cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client
 from src.speechify_datasets import (
     iter_negotiator,
@@ -397,6 +397,7 @@ def _build_args(cfg, split_label):
 
 def main(config_path=None):
     cfg = load_config(config_path)
+    apply_runtime_config(cfg)
 
     splits = list(cfg_get(cfg, "run.splits", ["train", "test"]))
     split_label = "all" if set(splits) >= {"train", "test"} else (splits[0] if splits else "all")

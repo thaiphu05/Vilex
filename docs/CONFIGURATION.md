@@ -44,13 +44,27 @@ python -m src.synthesis.run --config /path/to/other.yaml
 Secrets stay in the environment and are **never** read from the YAML:
 `GEMINI_CREDENTIALS`, `GEMINI_API_KEY`, `OPENAI_API_KEY`.
 
+### Gemini runtime knobs
+
+Two LLM settings are read by the Gemini client from the **environment**, not the
+config dict, so `apply_runtime_config()` bridges them from the YAML before any
+client is built (same precedence: an explicit env var still wins):
+
+| YAML key | Environment variable | Default |
+|---|---|---|
+| `llm.gemini_min_interval` | `GEMINI_MIN_INTERVAL` | `1.0` (seconds between calls) |
+| `llm.gemini_location` | `GEMINI_LOCATION` | `global` (Vertex AI region) |
+
+Pacing is read when a client is constructed, so a `config.yaml` edit is enough;
+you only need the env vars to override a machine-specific value at runtime.
+
 ## Sections
 
 | Section | Controls |
 |---|---|
 | `run` | `seed`, `datasets`, `splits`, `target_language`, `dry_run`, `test_parse` |
-| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `source` + `parsed_source_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`, `logdir`) |
-| `llm` | shared `model` + per-role overrides (writer / boundary / tt / bc), `base_url` + `bc_base_url` / `boundary_base_url`, `api_key` + `boundary_api_key`, `temperature`, `gemini_min_interval`, `gemini_location` |
+| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `source` + `parsed_source_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`, `logdir`). `logdir` is consumed by the `run_*.sh` wrappers only, not by any stage. |
+| `llm` | shared `model` + per-role overrides (writer / boundary / tt / bc), `base_url` + `bc_base_url` / `boundary_base_url`, `api_key` + `boundary_api_key`, `temperature`, `gemini_min_interval`, `gemini_location` (both bridged to env, see above) |
 | `stage1_speechify` | sample budgets, `max_variants`, `interviewer_subset`, `temperature`, `concise` |
 | `stage1_5_cross_turn` | `perror`, `seed`, `roles`, `min_digits`, `min_code_len` |
 | `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |

@@ -133,6 +133,28 @@ def cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     return node
 
 
+def apply_runtime_config(cfg: Optional[Dict[str, Any]] = None) -> None:
+    """Push non-secret runtime knobs from config onto the environment.
+
+    The Gemini client reads two knobs from the environment rather than from the
+    config dict: the request pacing interval (``GEMINI_MIN_INTERVAL``, read when
+    a client is built) and the Vertex AI region (``GEMINI_LOCATION``). This
+    bridges ``llm.gemini_min_interval`` / ``llm.gemini_location`` onto them so a
+    single edit in config.yaml is enough.
+
+    ``setdefault`` keeps the documented precedence: an explicit environment
+    variable still wins over the config file.
+    """
+    cfg = cfg or {}
+    llm = cfg_get(cfg, "llm", {}) or {}
+    min_interval = llm.get("gemini_min_interval")
+    if min_interval is not None:
+        os.environ.setdefault("GEMINI_MIN_INTERVAL", str(min_interval))
+    location = llm.get("gemini_location")
+    if location:
+        os.environ.setdefault("GEMINI_LOCATION", str(location))
+
+
 def resolve_llm_model(llm_cfg: Optional[Dict[str, Any]], role_key: str, default: str) -> str:
     """Pick the model for one LLM role.
 

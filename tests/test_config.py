@@ -1,5 +1,6 @@
 """Tests for the centralized config loader (src/config.py)."""
 
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -8,7 +9,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.config import REPO_ROOT, cfg_get, load_config, resolve_llm_model  # noqa: E402
+from src.config import (  # noqa: E402
+    REPO_ROOT,
+    apply_runtime_config,
+    cfg_get,
+    load_config,
+    resolve_llm_model,
+)
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -98,3 +105,27 @@ def test_resolve_llm_model_falls_back_to_default():
     assert resolve_llm_model({}, "tt_model", "in-code") == "in-code"
     assert resolve_llm_model(None, "tt_model", "in-code") == "in-code"
     assert resolve_llm_model({"writer_model": ""}, "writer_model", "in-code") == "in-code"
+
+
+def test_apply_runtime_config_bridges_gemini_knobs(monkeypatch):
+    monkeypatch.delenv("GEMINI_MIN_INTERVAL", raising=False)
+    monkeypatch.delenv("GEMINI_LOCATION", raising=False)
+    apply_runtime_config(
+        {"llm": {"gemini_min_interval": 2.5, "gemini_location": "europe-west1"}}
+    )
+    assert os.environ["GEMINI_MIN_INTERVAL"] == "2.5"
+    assert os.environ["GEMINI_LOCATION"] == "europe-west1"
+
+
+def test_apply_runtime_config_env_wins(monkeypatch):
+    monkeypatch.setenv("GEMINI_MIN_INTERVAL", "9.0")
+    monkeypatch.setenv("GEMINI_LOCATION", "us-central1")
+    apply_runtime_config({"llm": {"gemini_min_interval": 0.5, "gemini_location": "asia"}})
+    assert os.environ["GEMINI_MIN_INTERVAL"] == "9.0"
+    assert os.environ["GEMINI_LOCATION"] == "us-central1"
+
+
+def test_apply_runtime_config_empty_is_noop(monkeypatch):
+    monkeypatch.delenv("GEMINI_MIN_INTERVAL", raising=False)
+    apply_runtime_config({})
+    assert "GEMINI_MIN_INTERVAL" not in os.environ

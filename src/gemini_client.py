@@ -122,19 +122,29 @@ import threading
 
 _rate_lock = threading.Lock()
 _last_call_ts = 0.0
-_MIN_INTERVAL = float(
-    os.getenv("GEMINI_MIN_INTERVAL", "1.0")
-)  # 0.5 => 120/min (paid), 13.0 => free-tier
 
 
-def _rate_limit() -> None:
-    """Block until at least ``_MIN_INTERVAL`` seconds have passed since the
+def _resolve_min_interval() -> float:
+    """Seconds between Gemini calls, from ``GEMINI_MIN_INTERVAL`` (default 1.0).
+
+    0.5 => 120/min (paid), 13.0 => free-tier. Read when a client is built (not
+    at import) so a stage that pushes ``llm.gemini_min_interval`` from config.yaml
+    onto the environment first (see ``src.config.apply_runtime_config``) is
+    honoured."""
+    try:
+        return float(os.getenv("GEMINI_MIN_INTERVAL", "1.0"))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _rate_limit(min_interval: float) -> None:
+    """Block until at least ``min_interval`` seconds have passed since the
     previous Gemini call, so the combined LLM/boundary/TT traffic stays within
     the free-tier per-minute quota."""
     global _last_call_ts
     with _rate_lock:
         now = time.monotonic()
-        wait = _MIN_INTERVAL - (now - _last_call_ts)
+        wait = min_interval - (now - _last_call_ts)
         if wait > 0:
             time.sleep(wait)
         _last_call_ts = time.monotonic()
@@ -171,6 +181,7 @@ class GeminiClient:
             )
         self.model_name = model_name
         self._is_gemini = True
+        self._min_interval = _resolve_min_interval()
         # Sentinel only; the underlying SDK routes to its own endpoint. Kept as the
         # Generative Language host so is_gemini_client()/no_thinking_extra_body()
         # still recognise this client.
@@ -254,7 +265,7 @@ class GeminiClient:
         single-dialogue run never trips the per-minute cap, and still honour
         any ``RetryInfo`` delay if a 429 does slip through.
         """
-        _rate_limit()
+        _rate_limit(self._min_interval)
         max_attempts = 8
         delay = 5.0
         last_exc = None

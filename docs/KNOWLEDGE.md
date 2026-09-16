@@ -304,7 +304,8 @@ python tts_render/convert_spoken.py
 
 # Batch 5 datasets (Stage1→1.5→1.75→4→add_bc), log per dataset + STATUS
 MAX_TRAIN=30 MAX_DIALOGUES=30 MAX_WORKERS=16 ./run_local_stages1-4.sh
-#   env: MODEL, PY, DATASETS, DATA_ROOT, INPUT_PATH, MAX_TEST, GEMINI_MIN_INTERVAL (default 0.5), LOGDIR
+#   env (đều optional, trống = lấy từ config.yaml): PY, STAGE5_PY, MODEL, DATASETS, LOGDIR
+#   pacing/config: llm.gemini_min_interval (default 1.0) + llm.gemini_location trong config.yaml; env GEMINI_MIN_INTERVAL/GEMINI_LOCATION vẫn thắng nếu set
 #   log: data/logs/run_<date>/{<ds>.log, STATUS.txt} — expect 150 files data/vi_tt_bc khi đủ 5×30
 # Stage0 corpus prep (optional; vẫn argparse)
 python -m src.prepare_corpus -d all --save_dir results/annotated_dialogues --max_train 1000 --max_test 50

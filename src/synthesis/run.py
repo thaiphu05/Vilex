@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 # Note: build_boundary_annotation_queue is removed as the new logic
 # handles detection dynamically within speechify_turn_by_turn
-from src.config import cfg_get, load_config, resolve_llm_model
+from src.config import apply_runtime_config, cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client
 from src.synthesis.core import speechify_turn_by_turn
 from src.synthesis.prompts import _normalize_ws
@@ -100,6 +100,7 @@ def _build_args(cfg):
     llm = cfg_get(cfg, "llm", {})
     paths = cfg_get(cfg, "paths", {})
     hf = s4.get("hf", {}) if isinstance(s4.get("hf"), dict) else {}
+    judge = s4.get("judge", {}) if isinstance(s4.get("judge"), dict) else {}
     return SimpleNamespace(
         input_root=paths.get("results_dis_root", "data/results_vi_dis"),
         save_root=paths.get("synthesis_root", "data/vi_tt"),
@@ -123,6 +124,8 @@ def _build_args(cfg):
         hf_use_last_n_history=hf.get("use_last_n_history", 4),
         hf_batch_size=hf.get("batch_size", 8),
         max_turns=s4.get("max_turns", 0),
+        stop_check_every=judge.get("stop_check_every", 0),
+        min_turns_before_stop=judge.get("min_turns_before_stop", 2),
         temperature_user=s4.get("temperature_user", 0.2),
         temperature_ai=s4.get("temperature_ai", 0.2),
         target_language=cfg_get(cfg, "run.target_language", "vi"),
@@ -142,10 +145,14 @@ def _apply_stage4_config(cfg):
     ft_punct = cfg_get(cfg, "stage4_synthesis.ft_terminal_punct")
     if isinstance(ft_punct, list) and ft_punct:
         core._FT_TERMINAL_PUNCT = tuple(ft_punct)
+    hesitations = cfg_get(cfg, "stage4_synthesis.hesitations")
+    if isinstance(hesitations, list) and hesitations:
+        core.HESITATIONS = set(hesitations)
 
 
 def main(config_path=None):
     cfg = load_config(config_path)
+    apply_runtime_config(cfg)
     args = _build_args(cfg)
     _apply_stage4_config(cfg)
 
@@ -156,9 +163,11 @@ def main(config_path=None):
     # Main generation client
     client = make_client(args.llm_model_name, args.api_key, args.base_url)
 
-    # Boundary detection client (usually GPT-4-mini)
-    b_key = args.boundary_api_key or os.getenv("OPENAI_API_KEY")
-    b_url = args.boundary_base_url  # If None, OpenAI default
+    # Boundary detection client. api_key/base_url already fall back to the shared
+    # llm.api_key / llm.base_url in _build_args; make_client picks the backend
+    # from the model name, so no OPENAI_API_KEY special-casing belongs here.
+    b_key = args.boundary_api_key
+    b_url = args.boundary_base_url
     client_boundary = make_client(args.boundary_model_name, b_key, b_url)
 
     # Turn-taking scoring: HF classification model OR LLM-based client
@@ -213,7 +222,8 @@ def main(config_path=None):
                     source_turns=source_turns,
                     scenario_description=scenario_desc,
                     max_turns=args.max_turns,
-                    stop_check_every=0,
+                    stop_check_every=args.stop_check_every,
+                    min_turns_before_stop=args.min_turns_before_stop,
                     temperature_user=args.temperature_user,
                     temperature_ai=args.temperature_ai,
                     dataset=dataset,

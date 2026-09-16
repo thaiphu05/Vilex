@@ -45,7 +45,7 @@ paths:
     persuader: ""
     socraticlm: ""
   voice_clone_pool: data/voice_clone     # Stage 5 reference wavs + .txt sidecars
-  logdir: data/logs
+  logdir: data/logs                      # used by the run_*.sh wrappers only (not by any stage)
 
 # ---------------------------------------------------------------- llm routing
 # Point every role at one served model with just base_url + api_key + model.
@@ -64,8 +64,8 @@ llm:
   boundary_api_key: ""                   # "" -> inherit api_key
   boundary_base_url: ""                  # "" -> inherit base_url
   temperature: 0.7
-  gemini_min_interval: 2.0               # seconds between Gemini calls (rate limit)
-  gemini_location: global                # Vertex AI region
+  gemini_min_interval: 2.0               # seconds between Gemini calls; env GEMINI_MIN_INTERVAL overrides
+  gemini_location: global                # Vertex AI region; env GEMINI_LOCATION overrides
 
 # ---------------------------------------------------------------- Stage 1
 stage1_speechify:
@@ -116,7 +116,7 @@ stage4_synthesis:
     interruption_guard_start: 3
     length_guard_gap: 4
   ft_terminal_punct: [".", "?", "!"]
-  hesitations:
+  hesitations:               # words that count as a candidate boundary in Stage 4 slot detection
     - um
     - uh
     - umm
@@ -134,7 +134,7 @@ stage4_synthesis:
     - á
     - ú
   judge:
-    stop_check_every: 0      # 0 disables the judge early-stop
+    stop_check_every: 0      # 0 disables the judge early-stop; N>0 checks every N turns (extra LLM calls)
     min_turns_before_stop: 2
   hf_model_name_or_path: ""  # optional Stage 3 LoRA adapter dir (wins over llm.tt_model)
   hf:
