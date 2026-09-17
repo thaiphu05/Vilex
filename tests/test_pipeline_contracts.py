@@ -319,10 +319,15 @@ def test_stage4_max_turns_default_is_zero_auto():
     assert cfg_get(cfg, "stage4_synthesis.max_turns") == 0
 
 
-def test_stage4_passes_stop_check_every_zero():
-    """Source-driven generation disables the judge_done early-stop path."""
+def test_stage4_passes_stop_check_every_from_config():
+    """Source-driven generation disables judge_done via config (default 0)."""
+    from src.config import cfg_get, load_config
+
+    cfg = load_config(ROOT / "config_example.yaml")
+    assert cfg_get(cfg, "stage4_synthesis.judge.stop_check_every") == 0
     src = (ROOT / "src/synthesis/run.py").read_text()
-    assert "stop_check_every=0," in src
+    assert 'stop_check_every=judge.get("stop_check_every", 0)' in src
+    assert "stop_check_every=args.stop_check_every," in src
 
 
 def test_sanitize_utterance_preserves_pause_token():

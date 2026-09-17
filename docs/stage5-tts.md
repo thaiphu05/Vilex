@@ -86,6 +86,35 @@ N` takes only the first N dialogues, and `stage5_tts.num_variants` scales the
 per-dialogue cost linearly. (Sharding is not exposed in the config; run separate
 `paths.audio_root` trees if you parallelise.)
 
+### Batching, alignment granularity, fallbacks
+
+Everything here defaults to the sequential behaviour and can be turned on for a
+GPU box:
+
+- `stage5_tts.omnivoice.batch: true` — batch an utterance's text units into
+  `generate(text=[...])` calls (`batch_size`). **Needs a voice pool**: with the
+  reference voice fixed per speaker the units are independent; without a pool the
+  first unit seeds the clone for the rest and batching is disabled with a
+  warning. Units longer than `max_unit_chars` are generated one per call, after
+  the rest (so one long sentence cannot inflate a shared batch). A failed unit is
+  retried `max_retries` times, then becomes 0.2 s silence (`fallback_action`) and
+  its text is dropped from alignment.
+- `stage5_tts.aligner.granularity: utterance | sentence` — `sentence` aligns each
+  generated unit separately (then offsets into the turn timeline), which keeps
+  each forward short; `utterance` is the legacy whole-turn alignment.
+- `stage5_tts.aligner.batch: true` — batch the aligner forward across a dialogue.
+  It implies `bc_placement: defer` (via `auto`), i.e. the whole dialogue is
+  rendered before aligning and placing; gap/pause timing is unchanged because
+  placement still happens before the merged timeline is assembled.
+- `stage5_tts.aligner.max_secs` — audio above this length skips the model (its
+  ceiling is ~300 s) and goes straight to the fallback.
+- `stage5_tts.aligner.fallback: drop | proportional` — what to do when no words
+  came back (aligner error, empty result, or over `max_secs`). `proportional`
+  splits the turn span evenly across its words so backchannels are still placed
+  (approximate); `drop` discards that turn's queued backchannels, leaves
+  `isUttered=false`, and writes no `backchannels/*.wav` for them.
+- `stage5_tts.profile: true` — log per-dialogue generate/align timings.
+
 ## Dropped inputs
 
 Dialogues carrying LLM artifacts the sanitizer cannot repair — leaked think

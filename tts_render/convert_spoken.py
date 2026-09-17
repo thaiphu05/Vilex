@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import torchaudio
 import random
 import json
+import time
 import re
 import tempfile
 import zlib
@@ -59,6 +60,33 @@ SAVE_ALIGN_JSON = False
 ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 ALIGNER_DTYPE = "auto"
 ALIGNER_DEVICE = "cuda"
+# Aligner behaviour (stage5_tts.aligner.*).
+ALIGN_GRANULARITY = "utterance"  # utterance | sentence  (sentence = align each generated unit)
+ALIGN_MAX_SECS = 240.0  # skip the model above this audio length -> fallback
+ALIGN_FALLBACK = "proportional"  # drop | proportional
+ALIGN_BATCH = False  # batch the aligner forward across a dialogue's hosts (needs defer)
+ALIGN_BATCH_SIZE = 8
+# Stage 5 extras (stage5_tts.*).
+PROFILE = False  # log per-dialogue generate/vad/align timings
+BC_PLACEMENT = "auto"  # auto | inline | defer (auto -> defer when ALIGN_BATCH else inline)
+OMNI_BATCH = False  # batch the text units of one utterance into a single generate() call
+OMNI_BATCH_SIZE = 8
+OMNI_MAX_UNIT_CHARS = 400  # a longer unit gets its own batch
+OMNI_MAX_RETRIES = 2  # retries for a failed unit before silence
+OMNI_FALLBACK_ACTION = "silence"  # silence | drop (after retries are exhausted)
+# Resolved at start-up from BC_PLACEMENT/ALIGN_BATCH; logged once.
+_BC_PLACEMENT_RESOLVED = "inline"
+
+# Coarse per-run timing accumulators, printed per dialogue when `profile: true`.
+_PROFILE_SECS = {"generate": 0.0, "align": 0.0}
+_PROFILE_LAST = {"generate": 0.0, "align": 0.0}
+
+
+def _profile_add(key, seconds):
+    if PROFILE:
+        _PROFILE_SECS[key] = _PROFILE_SECS.get(key, 0.0) + seconds
+
+
 # Per-speaker voice-design instructs for OmniVoice (index 0=user, 1=assistant).
 OMNI_INSTRUCTS = ["male, northern accent", "female, gentle"]
 
@@ -69,9 +97,18 @@ _VOICE_POOL = None
 # --omnivoice_render_tags is off they are stripped before generate(); when on they
 # are kept so the model renders laughter / sigh / question-intonation / surprise.
 OMNI_PARALINGUIST_TAGS = [
-    "[laughter]", "[sigh]", "[confirmation-en]",
-    "[question-en]", "[question-ah]", "[question-oh]", "[question-ei]", "[question-yi]",
-    "[surprise-ah]", "[surprise-oh]", "[surprise-wa]", "[surprise-yo]",
+    "[laughter]",
+    "[sigh]",
+    "[confirmation-en]",
+    "[question-en]",
+    "[question-ah]",
+    "[question-oh]",
+    "[question-ei]",
+    "[question-yi]",
+    "[surprise-ah]",
+    "[surprise-oh]",
+    "[surprise-wa]",
+    "[surprise-yo]",
     "[dissatisfaction-hnn]",
 ]
 RENDERABLE_TAGS = frozenset(OMNI_PARALINGUIST_TAGS)
@@ -107,8 +144,7 @@ def _replace_dashes_outside_brackets(text: str) -> str:
     """
     parts = re.split(r"(\[[A-Za-z0-9_\-]+\])", text)
     return "".join(
-        p if (p.startswith("[") and p.endswith("]")) else p.replace("-", " ")
-        for p in parts
+        p if (p.startswith("[") and p.endswith("]")) else p.replace("-", " ") for p in parts
     )
 
 
@@ -142,8 +178,8 @@ USER_INTERRUPT_PROB = 0.5  # probability that user interrupts assistant [reduced
 MAX_PROMPT_SECS = 10  # max seconds of audio to keep in cumulative voice prompt
 
 # Final 2-channel master normalization (Stage 5 post-production).
-TARGET_LUFS = -23.0     # EBU R128 integrated-loudness target for the assembled track
-NOISE_FLOOR_AMP = 0.000  
+TARGET_LUFS = -23.0  # EBU R128 integrated-loudness target for the assembled track
+NOISE_FLOOR_AMP = 0.000
 
 # LibriSpeech speaker behind prompt_wavs/assistant_en.wav (see PROVENANCE.md).
 # Held out of the user voice pool so the assistant and a user variant can never
@@ -154,12 +190,27 @@ DEFAULT_SPEAKERS = ["user", "assistant"]
 DEFAULT_BC_CANDIDATES = ["yeah", "uh-huh", "mm-hmm", "right", "okay"]
 # Vietnamese backchannel fallbacks (used when a turn has no explicit content).
 DEFAULT_BC_CANDIDATES_VI = [
-    "ưm", "à", "ừ", "vâng", "phải", "ồ", "mm-hm", "uh huh", "ok",
-    "ừ [confirmation-en]", "ồ [surprise-oh]", "[laughter]", "[sigh]"
+    "ưm",
+    "à",
+    "ừ",
+    "vâng",
+    "phải",
+    "ồ",
+    "mm-hm",
+    "uh huh",
+    "ok",
+    "ừ [confirmation-en]",
+    "ồ [surprise-oh]",
+    "[laughter]",
+    "[sigh]",
 ]
 # Backchannel tokens that read better with a rising (question) intonation.
 _BC_RISING_TOKENS = {
-    "yeah", "ưm", "vâng", "à", "ừ",
+    "yeah",
+    "ưm",
+    "vâng",
+    "à",
+    "ừ",
 }
 DEFAULT_STYLE = "A speaker with normal speaking rate"
 TAKE_FLOOR_TOKEN = "[TAKE_FLOOR]"
@@ -176,6 +227,22 @@ def _noise_floor_segment(length, sr, amp=NOISE_FLOOR_AMP, channels=2):
     stereo fill used by ``aggregate_speech`` on 2-channel speech.
     """
     return torch.randn(channels, length) * amp
+
+
+_RESAMPLER_CACHE = {}
+
+
+def _resample(audio, orig_freq: int, new_freq: int):
+    """`torchaudio.transforms.Resample` with the kernel cached per (orig, new).
+
+    Stage 5 resamples on every sentence/utterance/align call; rebuilding the
+    polyphase kernel each time was pure overhead.
+    """
+    resampler = _RESAMPLER_CACHE.get((orig_freq, new_freq))
+    if resampler is None:
+        resampler = torchaudio.transforms.Resample(orig_freq=orig_freq, new_freq=new_freq)
+        _RESAMPLER_CACHE[(orig_freq, new_freq)] = resampler
+    return resampler(audio)
 
 
 def _sample_gap(turn_dur_sec: float = 3.0) -> float:
@@ -337,7 +404,9 @@ def _clean_text(s: str) -> str:
     return s.replace("[BACKCHANNEL]", "").replace("[TAKE_FLOOR]", "").strip()
 
 
-def _split_backchannel_segments(text: str, specific_contents: list = None, role2spk: dict = None, bc_spk: str = None):
+def _split_backchannel_segments(
+    text: str, specific_contents: list = None, role2spk: dict = None, bc_spk: str = None
+):
     parts = re.split(r"\[BACKCHANNEL\]", text)
     segments = []
     bc_counter = 0
@@ -348,15 +417,23 @@ def _split_backchannel_segments(text: str, specific_contents: list = None, role2
             segments.append((seg, None, None))
 
         if i < len(parts) - 1:
-            if specific_contents and bc_counter < len(specific_contents) and specific_contents[bc_counter]:
+            if (
+                specific_contents
+                and bc_counter < len(specific_contents)
+                and specific_contents[bc_counter]
+            ):
                 bc_text = specific_contents[bc_counter]
                 bc_counter += 1
             else:
                 bc_text = random.choice(
-                    DEFAULT_BC_CANDIDATES_VI if TTS_LANGUAGE.lower().startswith("vi") else DEFAULT_BC_CANDIDATES
+                    DEFAULT_BC_CANDIDATES_VI
+                    if TTS_LANGUAGE.lower().startswith("vi")
+                    else DEFAULT_BC_CANDIDATES
                 )
 
-            bc_spk_override = bc_spk if bc_spk is not None else (role2spk.get("assistant") if role2spk else None)
+            bc_spk_override = (
+                bc_spk if bc_spk is not None else (role2spk.get("assistant") if role2spk else None)
+            )
             segments.append((bc_text, "backchannel", bc_spk_override))
 
     return segments
@@ -385,15 +462,9 @@ _VI_WORD_RE = re.compile(r"[A-Za-zÀ-ỹ]+(?:['’\-][A-Za-zÀ-ỹ]+)*|\d+(?:\.\
 
 
 def count_words_for_align(text: str, normalizer=None) -> int:
-    t = (
-        text.replace("[BACKCHANNEL]", "")
-        .replace("[TAKE_FLOOR]", "")
-        .replace("[PAUSE]", "")
-    )
+    t = text.replace("[BACKCHANNEL]", "").replace("[TAKE_FLOOR]", "").replace("[PAUSE]", "")
     t = _strip_paralinguistic(
-        t.replace("[interrupted]", "")
-        .replace("[MASK1]", "")
-        .replace("[MASK2]", "")
+        t.replace("[interrupted]", "").replace("[MASK1]", "").replace("[MASK2]", "")
     )
     t = t.strip()
     if normalizer is not None:
@@ -654,7 +725,9 @@ def convert_original_to_expected(original: dict) -> dict:
                 "speaker": current_spk,
                 "uttr_type": uttr_type,
                 "texts": seg_text,
-                "split_texts": split_sentences(seg_text, TTS_LANGUAGE) if uttr_type is None else [seg_text],
+                "split_texts": (
+                    split_sentences(seg_text, TTS_LANGUAGE) if uttr_type is None else [seg_text]
+                ),
             }
 
             if take_floor and uttr_type is None:
@@ -843,7 +916,7 @@ def _load_omnivoice_ref_audio(path):
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
     if sr != TARGET_SR:
-        wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(wav)
+        wav = _resample(wav, orig_freq=sr, new_freq=TARGET_SR)
     max_ref = MAX_PROMPT_SECS * TARGET_SR
     if wav.size(1) > max_ref:
         wav = wav[:, -max_ref:]
@@ -864,8 +937,10 @@ def _load_voice_pool(pool_dir):
             print(f"WARNING: skipping {wav_path}, no sidecar .txt")
             continue
         items.append(
-            (_load_omnivoice_ref_audio(wav_path),
-             Path(txt_path).read_text(encoding="utf-8").strip())
+            (
+                _load_omnivoice_ref_audio(wav_path),
+                Path(txt_path).read_text(encoding="utf-8").strip(),
+            )
         )
     if len(items) < 2:
         raise SystemExit(
@@ -884,23 +959,24 @@ def generate_audio(model, tts_text, audio_prompt_path, ref_audio=None, ref_text=
     fall back to the ``instruct`` (zero-shot voice design).
     """
     if TTS_BACKEND == "omnivoice":
-        if ref_audio is not None:
-            audio = model.generate(
-                text=tts_text,
-                speed=1.2,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-                language=TTS_LANGUAGE,
-                normalize_text=True,
-            )
-        else:
-            audio = model.generate(
-                text=tts_text,
-                speed=1.2,
-                instruct=audio_prompt_path,
-                language=TTS_LANGUAGE,
-                normalize_text=True,
-            )
+        with torch.inference_mode():
+            if ref_audio is not None:
+                audio = model.generate(
+                    text=tts_text,
+                    speed=1.2,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    language=TTS_LANGUAGE,
+                    normalize_text=True,
+                )
+            else:
+                audio = model.generate(
+                    text=tts_text,
+                    speed=1.2,
+                    instruct=audio_prompt_path,
+                    language=TTS_LANGUAGE,
+                    normalize_text=True,
+                )
         wav = audio[0]
         wav = torch.from_numpy(np.asarray(wav)).float()
         if wav.dim() == 1:
@@ -991,15 +1067,23 @@ def _align_words_once(align, audio, text):
     """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels) with Qwen3.
 
     Returns a list of ``{word, start, end}`` with times relative to the start of
-    ``audio``; ``[]`` when alignment fails or yields no words.
+    ``audio``; ``[]`` when alignment fails, exceeds ``ALIGN_MAX_SECS`` (the
+    model's ~300 s ceiling) or yields no words.
     """
     text = (text or "").strip()
     if not text or audio.numel() == 0:
         return []
+    if ALIGN_MAX_SECS and audio.size(1) / TARGET_SR > ALIGN_MAX_SECS:
+        logging.warning(
+            "Alignment skipped: %.1fs exceeds aligner max_secs=%.0f; using fallback.",
+            audio.size(1) / TARGET_SR,
+            ALIGN_MAX_SECS,
+        )
+        return []
     # Mono float32 at 16 kHz (the feature extractor's rate), regardless of how
     # many channels the TTS output stacked.
     mono = audio.mean(dim=0, keepdim=True)
-    audio_16k = torchaudio.transforms.Resample(orig_freq=TARGET_SR, new_freq=PROMPT_SR)(mono)
+    audio_16k = _resample(mono, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
     wav = audio_16k.squeeze(0).numpy().astype(np.float32)
     try:
         inputs, word_lists = align["processor"].prepare_forced_aligner_inputs(
@@ -1019,6 +1103,301 @@ def _align_words_once(align, audio, text):
         logging.warning("Alignment failed for %r: %s", text[:40], exc)
         return []
     return _timestamps_to_words(stamps)
+
+
+def _audio_to_tensor(item):
+    """Coerce one OmniVoice `generate` output item to a mono [1, T] float tensor."""
+    wav = torch.from_numpy(np.asarray(item)).float()
+    if wav.dim() == 1:
+        wav = wav.unsqueeze(0)
+    if wav.numel() == 0:
+        wav = torch.zeros(1, int(0.2 * TARGET_SR))
+    return wav
+
+
+def _omni_generate_batch(model, texts, prompt_path, ref_audio, ref_text):
+    """One batched OmniVoice `generate()` call; returns one [1,T] tensor per text.
+
+    Batching only makes sense with a fixed voice reference (voice pool), so the
+    caller passes ``ref_audio``/``ref_text`` for cloning, or ``prompt_path`` for
+    instruct-only voice design.
+    """
+    t0 = time.time()
+    with torch.inference_mode():
+        if ref_audio is not None:
+            audios = model.generate(
+                text=list(texts),
+                speed=1.2,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                language=TTS_LANGUAGE,
+                normalize_text=True,
+            )
+        else:
+            audios = model.generate(
+                text=list(texts),
+                speed=1.2,
+                instruct=prompt_path,
+                language=TTS_LANGUAGE,
+                normalize_text=True,
+            )
+    _profile_add("generate", time.time() - t0)
+    return [_audio_to_tensor(a) for a in audios]
+
+
+def _words_with_fallback(words, text, duration_sec):
+    """Apply ``ALIGN_FALLBACK`` when the aligner produced no words.
+
+    ``proportional`` splits the utterance span evenly across its words so a
+    backchannel can still be placed; ``drop`` returns [] and the caller then
+    discards the queued backchannels.
+    """
+    if words:
+        return words
+    if ALIGN_FALLBACK == "proportional":
+        return _even_words(text, 0.0, duration_sec)
+    return []
+
+
+def _align_words_batch(align, items):
+    """Batched aligner forward over ``[(audio, text), ...]`` -> list of word lists."""
+    processor = align["processor"]
+    model = align["model"]
+    wavs = []
+    texts = []
+    for audio, text in items:
+        mono = audio.mean(dim=0, keepdim=True)
+        wavs.append(
+            _resample(mono, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
+            .squeeze(0)
+            .numpy()
+            .astype(np.float32)
+        )
+        texts.append((text or "").strip())
+    inputs, word_lists = processor.prepare_forced_aligner_inputs(
+        audio=wavs, transcript=texts, language=None
+    )
+    inputs = inputs.to(model.device, model.dtype)
+    with torch.inference_mode():
+        outputs = model(**inputs)
+    stamps = processor.decode_forced_alignment(
+        logits=outputs.logits,
+        input_ids=inputs["input_ids"],
+        word_lists=word_lists,
+        timestamp_token_id=model.config.timestamp_token_id,
+    )
+    return [_timestamps_to_words(s) for s in stamps]
+
+
+def _align_items(align, items):
+    """Align ``[(audio, text), ...]``; batched when ``ALIGN_BATCH``, else per item."""
+    results = [[] for _ in items]
+    if not items:
+        return results
+    t0 = time.time()
+    clean = all((t or "").strip() for _, t in items)
+    if not ALIGN_BATCH or len(items) == 1 or not clean:
+        for i, (audio, text) in enumerate(items):
+            results[i] = _align_words_once(align, audio, text)
+        _profile_add("align", time.time() - t0)
+        return results
+    step = max(1, ALIGN_BATCH_SIZE)
+    for start in range(0, len(items), step):
+        chunk = items[start : start + step]
+        try:
+            results[start : start + len(chunk)] = _align_words_batch(align, chunk)
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.warning("Batched alignment failed (%s); retrying per item.", exc)
+            for j, (audio, text) in enumerate(chunk):
+                results[start + j] = _align_words_once(align, audio, text)
+    _profile_add("align", time.time() - t0)
+    return results
+
+
+def _align_text(tts_text, normalizer):
+    """Text fed to the aligner: tag-free, [PAUSE]-free (same as the old inline path)."""
+    if normalizer is not None:
+        text = _strip_paralinguistic(
+            normalizer.normalize(tts_text, verbose=False, punct_post_process=True)
+        )
+    else:
+        text = _strip_paralinguistic(tts_text)
+    return text.replace("[PAUSE]", " ").strip()
+
+
+def _batch_generate_units(model, units, curr_idx, speaker_ref, prompt_paths):
+    """Pre-generate an utterance's text units with batched OmniVoice calls.
+
+    Returns ``({unit_index: tensor}, {failed_unit_indexes})``. A unit longer than
+    ``OMNI_MAX_UNIT_CHARS`` is generated on its own so it cannot inflate a shared
+    batch. Each batch is retried ``OMNI_MAX_RETRIES`` times; a batch that keeps
+    failing is retried per item; an item that still fails becomes 0.2 s silence
+    and is reported in ``failed`` so the caller can drop its text from alignment.
+    """
+    have_ref = speaker_ref[curr_idx] is not None
+    ref_audio = (speaker_ref[curr_idx][0], TARGET_SR) if have_ref else None
+    ref_text = speaker_ref[curr_idx][1] if have_ref else None
+    prompt = prompt_paths[curr_idx]
+
+    text_idx = [i for i, (kind, _) in enumerate(units) if kind == "text"]
+    cleaned = {i: _replace_dashes_outside_brackets(units[i][1]) for i in text_idx}
+    pregen = {}
+    failed = set()
+
+    normal = [i for i in text_idx if len(cleaned[i]) <= OMNI_MAX_UNIT_CHARS]
+    long_units = [i for i in text_idx if len(cleaned[i]) > OMNI_MAX_UNIT_CHARS]
+    if long_units:
+        logging.info(
+            "OmniVoice batch: %d unit(s) over %d chars -> own batch",
+            len(long_units),
+            OMNI_MAX_UNIT_CHARS,
+        )
+
+    step = max(1, OMNI_BATCH_SIZE)
+    batches = [normal[i : i + step] for i in range(0, len(normal), step)]
+    batches += [[i] for i in long_units]
+    for batch in batches:
+        texts = [cleaned[i] for i in batch]
+        audios = None
+        for attempt in range(OMNI_MAX_RETRIES + 1):
+            try:
+                audios = _omni_generate_batch(model, texts, prompt, ref_audio, ref_text)
+                break
+            except Exception as exc:  # pragma: no cover - model/API dependent
+                logging.warning(
+                    "OmniVoice batch failed (attempt %d/%d): %s",
+                    attempt + 1,
+                    OMNI_MAX_RETRIES + 1,
+                    exc,
+                )
+        if audios is None or len(audios) != len(batch):
+            logging.warning("OmniVoice: %d unit(s) failed after retries -> silence", len(batch))
+            for i in batch:
+                failed.add(i)
+                pregen[i] = torch.zeros(1, int(0.2 * TARGET_SR))
+            continue
+        for i, audio in zip(batch, audios):
+            pregen[i] = audio
+    return pregen, failed
+
+
+def _align_hosts(align, specs):
+    """Align host utterances, honouring ALIGN_GRANULARITY.
+
+    Each spec is ``{"audio", "text", "units"}`` where ``units`` is a list of
+    ``(unit_text, start, end)`` sample spans. With ``granularity: sentence`` each
+    unit is aligned separately (all units of all specs go through one batched
+    call when ``ALIGN_BATCH``), then the word times are offset into the utterance
+    timeline; otherwise the whole utterance is aligned as one item.
+    """
+    sentence = ALIGN_GRANULARITY == "sentence"
+    flat_items = []
+    owners = []  # (spec_index, unit_start_sample) in flat_items order
+    whole_items = []  # spec indexes aligned as a whole utterance
+    for si, spec in enumerate(specs):
+        units = [u for u in (spec.get("units") or []) if (u[0] or "").strip()]
+        if sentence and len(units) > 1:
+            for utext, ustart, _uend in units:
+                flat_items.append((spec["audio"][:, ustart:_uend], utext))
+                owners.append((si, ustart))
+        else:
+            whole_items.append(si)
+
+    outs = [[] for _ in specs]
+    if flat_items:
+        for (si, ustart), words in zip(owners, _align_items(align, flat_items)):
+            offset = ustart / TARGET_SR
+            outs[si].extend(
+                {"word": w["word"], "start": w["start"] + offset, "end": w["end"] + offset}
+                for w in words
+            )
+    if whole_items:
+        whole = _align_items(align, [(specs[si]["audio"], specs[si]["text"]) for si in whole_items])
+        for si, words in zip(whole_items, whole):
+            outs[si] = words
+
+    dur = [spec["audio"].size(1) / TARGET_SR for spec in specs]
+    return [_words_with_fallback(outs[i], specs[i]["text"], dur[i]) for i in range(len(specs))]
+
+
+def _place_queued_bcs(
+    bcs,
+    all_words,
+    listener_speech,
+    tts_speech,
+    other_idx,
+    text_idx,
+    utterance,
+    next_uttr_type,
+    modified_utterances,
+    align,
+    host_idx,
+    save_align_json,
+):
+    """Write queued backchannels into the listener track; returns placement info.
+
+    Extracted so the same math runs whether placement happens inline (default)
+    or deferred until the whole dialogue's audio exists.
+    """
+    if not bcs:
+        return listener_speech, tts_speech, [], []
+    if not all_words:
+        logging.warning(
+            "Alignment produced no words for host %s; dropping %d backchannel(s).",
+            host_idx,
+            len(bcs),
+        )
+        return listener_speech, tts_speech, [], []
+
+    bc_pos = []
+    for bc in bcs:
+        word_idx = max(0, min(bc["word_count"] - 1, len(all_words) - 2))
+        bc_pos.append(round(all_words[word_idx]["end"] * TARGET_SR))
+    bc_pos.append(tts_speech.size(1))
+
+    uttered = []
+    align_entries = []
+    cursor = 0
+    for bc_idx, bc in enumerate(bcs):
+        bc_speech = bc["speech"]
+        start = max(bc_pos[bc_idx], cursor)
+        pad_size = bc_pos[bc_idx + 1] - start - bc_speech.size(1)
+        start += generate_delay(pad_size, mode="backchannel")
+
+        # The last backchannel of a turn may extend the host turn to fit, unless
+        # the next utterance interrupts this one -- then drop it instead.
+        if (
+            pad_size <= 0
+            and bc_idx == len(bcs) - 1
+            and text_idx == len(utterance["texts_styled"]) - 1
+            and next_uttr_type == "interrupt"
+        ):
+            continue
+
+        listener_speech, tts_speech = place_backchannel(
+            listener_speech, tts_speech, bc_speech, start
+        )
+        cursor = start + bc_speech.size(1)
+
+        modified_utterances[bc["turn"]]["texts_styled"][bc["text_idx"]]["isUttered"] = True
+        uttered.append({"speech": bc_speech, "text": bc["text"]})
+
+        if save_align_json:
+            bc_text = bc["text"]
+            bc_words = (
+                _align_words_once(align, bc_speech, bc_text) if len(bc_text.split()) > 1 else []
+            )
+            align_entries.append(
+                {
+                    "host_idx": host_idx,
+                    "speaker": other_idx,
+                    "text": bc_text,
+                    "local_start_sec": start / TARGET_SR,
+                    "length_sec": bc_speech.size(1) / TARGET_SR,
+                    "words": bc_words,
+                }
+            )
+    return listener_speech, tts_speech, uttered, align_entries
 
 
 def _even_words(text, start_sec, end_sec):
@@ -1120,8 +1499,16 @@ def _build_alignment_payloads(dialogue_id, variant_idx, speech_meta, align, tota
 
 
 def main_process(
-    model, vad_model, align, args, index, origin_dialogue, prompt_paths, tmpdir,
-    normalizer=None, speaker_refs=None,
+    model,
+    vad_model,
+    align,
+    args,
+    index,
+    origin_dialogue,
+    prompt_paths,
+    tmpdir,
+    normalizer=None,
+    speaker_refs=None,
 ):
     dialogue = copy.deepcopy(origin_dialogue)
 
@@ -1130,6 +1517,9 @@ def main_process(
     # Word-alignment records (filled only when SAVE_ALIGN_JSON).
     align_utt = []
     align_bc = []
+    # Hosts whose align+placement is deferred until the whole dialogue's audio
+    # exists (bc_placement: defer), so the aligner can batch across them.
+    pending = []
 
     init_spk = dialogue["utterances_with_bc"][0]["speaker"]
     spk_offset = 1 if init_spk == DEFAULT_SPEAKERS[1] else 0
@@ -1155,7 +1545,7 @@ def main_process(
         for p in prompt_paths:
             wav, sr = torchaudio.load(p)
             if sr != TARGET_SR:
-                wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(wav)
+                wav = _resample(wav, orig_freq=sr, new_freq=TARGET_SR)
             if wav.shape[0] > 1:
                 wav = wav.mean(dim=0, keepdim=True)
             cumulative_audio.append(wav)
@@ -1242,7 +1632,23 @@ def main_process(
                             units.append(("text", part))
                         if pi != len(parts) - 1:
                             units.append(("pause", ""))
+                # Optionally pre-generate this utterance's text units with batched
+                # OmniVoice calls. Safe only with a fixed voice reference (pool):
+                # otherwise the first unit seeds the clone for the later ones.
+                pregen = {}
+                failed_units = set()
+                if (
+                    OMNI_BATCH
+                    and TTS_BACKEND == "omnivoice"
+                    and utterance["uttr_type"] != "backchannel"
+                    and any(kind == "text" for kind, _ in units)
+                ):
+                    pregen, failed_units = _batch_generate_units(
+                        model, units, curr_idx, speaker_ref, cumulative_prompt_paths
+                    )
+
                 generated_speech_list = []
+                unit_spans = []
                 if not units:
                     # Text was only paralinguistic tags (e.g. "[sigh]") that were
                     # stripped above -> no spoken content. Emit a short silence so
@@ -1271,30 +1677,36 @@ def main_process(
                         ref_audio = None
                         ref_text = None
 
-                    if utterance["uttr_type"] == "backchannel":
+                    if st_idx in pregen:
+                        speech_ = pregen[st_idx]
+                    elif utterance["uttr_type"] == "backchannel":
                         bc_sentence = sentence_clean
                         if bc_sentence.strip().lower() in _BC_RISING_TOKENS:
                             bc_sentence = bc_sentence.rstrip() + "?"
                         speech_ = bc_cache.get(curr_idx, sentence_)
                         if speech_ is None:
                             speech_ = generate_audio(
-                                model, bc_sentence, cumulative_prompt_paths[curr_idx],
-                                ref_audio=ref_audio, ref_text=ref_text,
+                                model,
+                                bc_sentence,
+                                cumulative_prompt_paths[curr_idx],
+                                ref_audio=ref_audio,
+                                ref_text=ref_text,
                             )
                             bc_cache.put(curr_idx, sentence_, speech_)
                         else:
                             speech_ = speech_.clone()
                     else:
                         speech_ = generate_audio(
-                            model, sentence_clean, cumulative_prompt_paths[curr_idx],
-                            ref_audio=ref_audio, ref_text=ref_text,
+                            model,
+                            sentence_clean,
+                            cumulative_prompt_paths[curr_idx],
+                            ref_audio=ref_audio,
+                            ref_text=ref_text,
                         )
 
                     # VAD trim between sentences (not the last unit)
                     if st_idx != len(units) - 1:
-                        speech_16k = torchaudio.transforms.Resample(
-                            orig_freq=TARGET_SR, new_freq=PROMPT_SR
-                        )(speech_)
+                        speech_16k = _resample(speech_, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
                         speech_timestamps = get_speech_timestamps(
                             speech_16k, vad_model, threshold=0.3, sampling_rate=PROMPT_SR
                         )
@@ -1326,7 +1738,12 @@ def main_process(
                             cumulative_audio[curr_idx], cumulative_prompt_paths[curr_idx]
                         )
 
+                    unit_start = sum(s.size(1) for s in generated_speech_list)
                     generated_speech_list.append(speech_)
+                    if utterance["uttr_type"] != "backchannel" and st_idx not in failed_units:
+                        unit_spans.append(
+                            (sentence_clean, unit_start, unit_start + speech_.size(1))
+                        )
 
                     # Seed the OmniVoice voice-clone reference from this speaker's
                     # first non-backchannel sentence so later turns stay consistent.
@@ -1343,12 +1760,18 @@ def main_process(
                             _strip_paralinguistic(sentence_clean),
                         )
 
+                # If some units failed (silence), drop their text so the aligner is
+                # not asked to match words that were never spoken.
+                align_text_override = (
+                    " ".join(t for t, _s, _e in unit_spans)
+                    if utterance["uttr_type"] != "backchannel" and failed_units
+                    else None
+                )
+
                 tts_speech = torch.cat(generated_speech_list, dim=1)
 
                 # VAD on full utterance
-                tts_speech_16k = torchaudio.transforms.Resample(
-                    orig_freq=TARGET_SR, new_freq=PROMPT_SR
-                )(tts_speech)
+                tts_speech_16k = _resample(tts_speech, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
                 speech_timestamps = get_speech_timestamps(
                     tts_speech_16k, vad_model, threshold=0.3, sampling_rate=PROMPT_SR
                 )
@@ -1391,13 +1814,13 @@ def main_process(
                     if next_uttr_type is None or next_uttr_type == "interrupt":
                         if TTS_BACKEND == "chatterbox":
                             # Reset cumulative prompt to initial
-                            shutil.copyfile(prompt_paths[curr_idx], cumulative_prompt_paths[curr_idx])
+                            shutil.copyfile(
+                                prompt_paths[curr_idx], cumulative_prompt_paths[curr_idx]
+                            )
                             os.chmod(cumulative_prompt_paths[curr_idx], 0o644)
                             wav, sr = torchaudio.load(prompt_paths[curr_idx])
                             if sr != TARGET_SR:
-                                wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(
-                                    wav
-                                )
+                                wav = _resample(wav, orig_freq=sr, new_freq=TARGET_SR)
                             if wav.shape[0] > 1:
                                 wav = wav.mean(dim=0, keepdim=True)
                             cumulative_audio[curr_idx] = wav
@@ -1406,10 +1829,12 @@ def main_process(
                 host_text = tts_texts[other_idx]
                 wc = count_words_for_align(host_text, normalizer)
 
-                bc_rms = float(torch.sqrt((tts_speech ** 2).mean()).item())
+                bc_rms = float(torch.sqrt((tts_speech**2).mean()).item())
                 logging.info(
                     "backchannel queued: text=%r rms=%.4f len=%.2fs",
-                    tts_text, bc_rms, tts_speech.size(1) / TARGET_SR,
+                    tts_text,
+                    bc_rms,
+                    tts_speech.size(1) / TARGET_SR,
                 )
                 bc_queue[curr_idx].append(
                     {
@@ -1425,110 +1850,78 @@ def main_process(
                 listener_speech = torch.zeros_like(tts_speech)
                 host_idx = len(total_speech)
 
-                all_words = []
-                if SAVE_ALIGN_JSON or bc_queue[other_idx]:
-                    if normalizer is not None:
-                        tts_text_for_align = _strip_paralinguistic(
-                            normalizer.normalize(
-                                tts_text, verbose=False, punct_post_process=True
-                            )
-                        )
-                    else:
-                        tts_text_for_align = _strip_paralinguistic(tts_text)
-                    tts_text_for_align = tts_text_for_align.replace("[PAUSE]", " ").strip()
-                    all_words = _align_words_once(align, tts_speech, tts_text_for_align)
-                    if SAVE_ALIGN_JSON:
-                        align_utt.append(
-                            {
-                                "host_idx": host_idx,
-                                "speaker": curr_idx,
-                                "text": tts_text_for_align,
-                                "words": all_words,
-                            }
-                        )
+                qbcs = bc_queue[other_idx]
+                need_align = bool(SAVE_ALIGN_JSON or qbcs)
+                tts_text_for_align = (
+                    align_text_override
+                    if align_text_override is not None
+                    else (_align_text(tts_text, normalizer) if need_align else "")
+                )
 
-                if bc_queue[other_idx] and not all_words:
-                    # No word survived alignment, so there is nothing to anchor the
-                    # backchannels to. Drop them rather than guess a position; they stay
-                    # isUttered=False so meta.json does not claim audio that is not there.
-                    logging.warning(
-                        f"Alignment produced no words for turn {turn}; dropping "
-                        f"{len(bc_queue[other_idx])} backchannel(s)."
+                if _BC_PLACEMENT_RESOLVED == "defer" and need_align:
+                    # Defer alignment (and BC placement) until the whole dialogue's
+                    # audio exists, so the aligner can batch across host utterances.
+                    pending.append(
+                        {
+                            "host_idx": host_idx,
+                            "other_idx": other_idx,
+                            "curr_idx": curr_idx,
+                            "turn": turn,
+                            "text_idx": text_idx,
+                            "next_uttr_type": next_uttr_type,
+                            "utterance": utterance,
+                            "text": tts_text_for_align,
+                            "audio": tts_speech,
+                            "units": unit_spans,
+                            "bcs": list(qbcs),
+                        }
                     )
                     bc_queue[other_idx] = []
-
-                if bc_queue[other_idx]:
-                    bc_pos = []
-                    for bc in bc_queue[other_idx]:
-                        # Anchor after the word the backchannel was placed at in Stage 4,
-                        # clamped into the words the aligner actually returned.
-                        word_idx = max(0, min(bc["word_count"] - 1, len(all_words) - 2))
-                        bc_pos.append(round(all_words[word_idx]["end"] * TARGET_SR))
-                    bc_pos.append(tts_speech.size(1))
-
                     uttered_bc_list = []
-                    # Backchannels come from one listener, so they cannot overlap each
-                    # other: `cursor` pushes a backchannel past the previous one when the
-                    # alignment anchors them closer together than they are long. Without
-                    # it the later write silently overwrote the tail of the earlier one,
-                    # which meta.json still reported as uttered in full.
-                    cursor = 0
-                    for bc_idx, bc in enumerate(bc_queue[other_idx]):
-                        bc_speech = bc["speech"]
-                        start = max(bc_pos[bc_idx], cursor)
-                        pad_size = bc_pos[bc_idx + 1] - start - bc_speech.size(1)
-                        start += generate_delay(pad_size, mode="backchannel")
-
-                        # The last backchannel of a turn may have to extend the host turn
-                        # to fit. That is fine unless the next utterance interrupts this
-                        # one, where the extension would run into the interrupter -- there
-                        # the backchannel is dropped instead.
-                        if (
-                            pad_size <= 0
-                            and bc_idx == len(bc_queue[other_idx]) - 1
-                            and text_idx == len(utterance["texts_styled"]) - 1
-                            and next_uttr_type == "interrupt"
-                        ):
-                            continue
-
-                        listener_speech, tts_speech = place_backchannel(
-                            listener_speech, tts_speech, bc_speech, start
-                        )
-                        cursor = start + bc_speech.size(1)
-
-                        modified_utterances[bc["turn"]]["texts_styled"][bc["text_idx"]][
-                            "isUttered"
-                        ] = True
-
-                        uttered_bc_list.append({"speech": bc_speech, "text": bc["text"]})
-
+                else:
+                    all_words = []
+                    if need_align:
+                        all_words = _align_hosts(
+                            align,
+                            [
+                                {
+                                    "audio": tts_speech,
+                                    "text": tts_text_for_align,
+                                    "units": unit_spans,
+                                }
+                            ],
+                        )[0]
                         if SAVE_ALIGN_JSON:
-                            bc_text = bc["text"]
-                            # Only multi-word backchannels are worth aligning; a
-                            # single-word BC spans its whole clip.
-                            bc_words = (
-                                _align_words_once(align, bc_speech, bc_text)
-                                if len(bc_text.split()) > 1
-                                else []
-                            )
-                            align_bc.append(
+                            align_utt.append(
                                 {
                                     "host_idx": host_idx,
-                                    "speaker": other_idx,
-                                    "text": bc_text,
-                                    "local_start_sec": start / TARGET_SR,
-                                    "length_sec": bc_speech.size(1) / TARGET_SR,
-                                    "words": bc_words,
+                                    "speaker": curr_idx,
+                                    "text": tts_text_for_align,
+                                    "words": all_words,
                                 }
                             )
+
+                    listener_speech, tts_speech, uttered_bc_list, bc_entries = _place_queued_bcs(
+                        qbcs,
+                        all_words,
+                        listener_speech,
+                        tts_speech,
+                        other_idx,
+                        text_idx,
+                        utterance,
+                        next_uttr_type,
+                        modified_utterances,
+                        align,
+                        host_idx,
+                        SAVE_ALIGN_JSON,
+                    )
+                    align_bc.extend(bc_entries)
+                    bc_queue[other_idx] = []
 
                 if curr_idx == 0:
                     speech = [tts_speech, listener_speech]
                 else:
                     speech = [listener_speech, tts_speech]
-
-                if bc_queue[other_idx]:
-                    bc_queue[other_idx] = []
 
                 speech = torch.cat(speech, dim=0)
 
@@ -1565,7 +1958,63 @@ def main_process(
 
         prev_uttr_type = utterance["uttr_type"]
 
+    if pending:
+        # Deferred pass: align every pending host (batched when ALIGN_BATCH), then
+        # place their backchannels into the already-appended host segments. Doing
+        # this before aggregate_speech keeps the gap/pause timing identical to the
+        # inline path.
+        specs = [{"audio": p["audio"], "text": p["text"], "units": p["units"]} for p in pending]
+        words_list = _align_hosts(align, specs)
+        if SAVE_ALIGN_JSON:
+            for p, words in zip(pending, words_list):
+                align_utt.append(
+                    {
+                        "host_idx": p["host_idx"],
+                        "speaker": p["curr_idx"],
+                        "text": p["text"],
+                        "words": words,
+                    }
+                )
+        for p, words in zip(pending, words_list):
+            if not p["bcs"]:
+                continue
+            host = total_speech[p["host_idx"]]
+            host_ch = p["curr_idx"]
+            listener_ch = 1 - host_ch
+            listener, host_audio, uttered, entries = _place_queued_bcs(
+                p["bcs"],
+                words,
+                host[listener_ch : listener_ch + 1],
+                host[host_ch : host_ch + 1],
+                p["other_idx"],
+                p["text_idx"],
+                p["utterance"],
+                p["next_uttr_type"],
+                modified_utterances,
+                align,
+                p["host_idx"],
+                SAVE_ALIGN_JSON,
+            )
+            align_bc.extend(entries)
+            channels = [None, None]
+            channels[host_ch] = host_audio
+            channels[listener_ch] = listener
+            total_speech[p["host_idx"]] = torch.cat(channels, dim=0)
+            if uttered:
+                total_speech_meta[p["host_idx"]]["backchannels"] = [
+                    {"idx": i, "tts_text": b["text"]} for i, b in enumerate(uttered)
+                ]
+                for b in uttered:
+                    backchannel_list.append(b["speech"].clone())
+
     merged_speech = aggregate_speech(total_speech, total_speech_meta)
+
+    if PROFILE:
+        gen = _PROFILE_SECS["generate"] - _PROFILE_LAST["generate"]
+        aln = _PROFILE_SECS["align"] - _PROFILE_LAST["align"]
+        _PROFILE_LAST["generate"] = _PROFILE_SECS["generate"]
+        _PROFILE_LAST["align"] = _PROFILE_SECS["align"]
+        logging.info("[profile] generate=%.2fs align=%.2fs", gen, aln)
 
     dialogue["utterances_with_bc"] = modified_utterances
     dialogue["speech_meta"] = total_speech_meta
@@ -1584,6 +2033,10 @@ def _apply_tts_config(cfg):
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
     global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON
     global ALIGNER_MODEL, ALIGNER_DTYPE, ALIGNER_DEVICE
+    global ALIGN_GRANULARITY, ALIGN_MAX_SECS, ALIGN_FALLBACK, ALIGN_BATCH, ALIGN_BATCH_SIZE
+    global PROFILE, BC_PLACEMENT, _BC_PLACEMENT_RESOLVED
+    global OMNI_BATCH, OMNI_BATCH_SIZE, OMNI_MAX_UNIT_CHARS, OMNI_MAX_RETRIES
+    global OMNI_FALLBACK_ACTION
     global OMNI_PARALINGUIST_TAGS, RENDERABLE_TAGS, _PARALINGUIST_RE
     global DEFAULT_BC_CANDIDATES, DEFAULT_BC_CANDIDATES_VI, _BC_RISING_TOKENS
 
@@ -1593,6 +2046,7 @@ def _apply_tts_config(cfg):
     tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
     bc = s5.get("backchannels", {}) if isinstance(s5.get("backchannels"), dict) else {}
     aligner = s5.get("aligner", {}) if isinstance(s5.get("aligner"), dict) else {}
+    omni = s5.get("omnivoice", {}) if isinstance(s5.get("omnivoice"), dict) else {}
 
     TARGET_SR = s5.get("target_sr", TARGET_SR)
     PROMPT_SR = s5.get("prompt_sr", PROMPT_SR)
@@ -1625,6 +2079,26 @@ def _apply_tts_config(cfg):
     ALIGNER_MODEL = aligner.get("model") or ALIGNER_MODEL
     ALIGNER_DTYPE = aligner.get("dtype") or ALIGNER_DTYPE
     ALIGNER_DEVICE = aligner.get("device") or s5.get("device", ALIGNER_DEVICE)
+
+    ALIGN_GRANULARITY = aligner.get("granularity") or ALIGN_GRANULARITY
+    ALIGN_MAX_SECS = float(aligner.get("max_secs", ALIGN_MAX_SECS) or 0)
+    ALIGN_FALLBACK = aligner.get("fallback") or ALIGN_FALLBACK
+    ALIGN_BATCH = bool(aligner.get("batch", ALIGN_BATCH))
+    ALIGN_BATCH_SIZE = int(aligner.get("batch_size", ALIGN_BATCH_SIZE))
+
+    PROFILE = bool(s5.get("profile", PROFILE))
+    BC_PLACEMENT = s5.get("bc_placement", BC_PLACEMENT)
+    _BC_PLACEMENT_RESOLVED = (
+        "defer"
+        if (BC_PLACEMENT == "defer" or (BC_PLACEMENT == "auto" and ALIGN_BATCH))
+        else "inline"
+    )
+
+    OMNI_BATCH = bool(omni.get("batch", OMNI_BATCH))
+    OMNI_BATCH_SIZE = int(omni.get("batch_size", OMNI_BATCH_SIZE))
+    OMNI_MAX_UNIT_CHARS = int(omni.get("max_unit_chars", OMNI_MAX_UNIT_CHARS))
+    OMNI_MAX_RETRIES = int(omni.get("max_retries", OMNI_MAX_RETRIES))
+    OMNI_FALLBACK_ACTION = omni.get("fallback_action", OMNI_FALLBACK_ACTION)
 
     supported = tags.get("supported")
     if isinstance(supported, list) and supported:
@@ -1684,6 +2158,17 @@ def main(args):
     if TTS_BACKEND == "omnivoice":
         OMNI_INSTRUCTS = [args.omnivoice_user_instruct, args.omnivoice_assistant_instruct]
 
+    # A100-class rooms: TF32 matmuls + cudnn autotuning are free speed-ups for the
+    # fp32 leftovers (most model math is bf16/fp16 already).
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:  # pragma: no cover - older torch
+            pass
+
     # force=True: importing transformers/nemo installs root handlers of their
     # own, and without it basicConfig() is a silent no-op -- which used to leave
     # the run at DEBUG, burying the per-dialogue progress under megabytes of
@@ -1719,9 +2204,7 @@ def main(args):
         pass
     import warnings
 
-    warnings.filterwarnings(
-        "ignore", message=".*unauthenticated requests to the HF Hub.*"
-    )
+    warnings.filterwarnings("ignore", message=".*unauthenticated requests to the HF Hub.*")
 
     # Resolve every input before touching a GPU: loading Chatterbox, the forced
     # aligner and the NeMo grammars costs a couple of minutes, and a bad
@@ -1816,6 +2299,8 @@ def main(args):
         model = OmniVoice.from_pretrained("k2-fsa/OmniVoice")
         if device == "cuda":
             model = model.cuda()
+        if hasattr(model, "eval"):
+            model.eval()
         TARGET_SR = 24000  # OmniVoice operates at 24 kHz
         align = _load_forced_aligner()
         normalizer = None  # OmniVoice normalizes internally; skip NeMo
@@ -1840,10 +2325,26 @@ def main(args):
 
     # Build the OmniVoice voice-clone pool once (if requested). Each dialogue then
     # draws 2 distinct voices from it via the per-dialogue deterministic RNG.
-    global _VOICE_POOL
+    global _VOICE_POOL, OMNI_BATCH
     _VOICE_POOL = None
     if TTS_BACKEND == "omnivoice" and getattr(args, "omnivoice_voice_pool", ""):
         _VOICE_POOL = _load_voice_pool(args.omnivoice_voice_pool)
+
+    # Batched OmniVoice needs a fixed voice reference (the pool): without it the
+    # first generated unit seeds the clone for every later one, so units depend
+    # on each other and cannot be batched.
+    if OMNI_BATCH and TTS_BACKEND == "omnivoice" and _VOICE_POOL is None:
+        logging.warning("omnivoice.batch=true needs a voice pool; falling back to sequential.")
+        OMNI_BATCH = False
+
+    logging.info(
+        "Stage 5: bc_placement=%s (requested %s), aligner.batch=%s, omnivoice.batch=%s, profile=%s",
+        _BC_PLACEMENT_RESOLVED,
+        BC_PLACEMENT,
+        ALIGN_BATCH,
+        OMNI_BATCH,
+        PROFILE,
+    )
 
     for fpath_str in json_files:
         fpath = Path(fpath_str)
@@ -1871,7 +2372,9 @@ def main(args):
         if TTS_BACKEND == "omnivoice":
             if _VOICE_POOL is not None:
                 ui, ai = dialogue_rng.sample(range(len(_VOICE_POOL)), 2)
-                voice_picks = [("omnivoice_pool", [_VOICE_POOL[ui], _VOICE_POOL[ai]])] * args.num_variants
+                voice_picks = [
+                    ("omnivoice_pool", [_VOICE_POOL[ui], _VOICE_POOL[ai]])
+                ] * args.num_variants
             else:
                 voice_picks = [("omnivoice", None)] * args.num_variants
         else:
@@ -1904,7 +2407,9 @@ def main(args):
             if TTS_BACKEND == "omnivoice":
                 prompt_paths = list(OMNI_INSTRUCTS)
                 if _VOICE_POOL is not None:
-                    logging.info(f"  var{variant_idx:02d}: omnivoice cloning from voice pool (2 random voices)")
+                    logging.info(
+                        f"  var{variant_idx:02d}: omnivoice cloning from voice pool (2 random voices)"
+                    )
                 else:
                     logging.info(
                         f"  var{variant_idx:02d}: omnivoice user='{OMNI_INSTRUCTS[0]}' "
@@ -1935,10 +2440,13 @@ def main(args):
                         dialogue_data,
                         prompt_paths,
                         tmpdir,
-                    normalizer,
-                    speaker_refs=voice_picks[variant_idx][1]
-                    if voice_picks[variant_idx][0] == "omnivoice_pool" else None,
-                )
+                        normalizer,
+                        speaker_refs=(
+                            voice_picks[variant_idx][1]
+                            if voice_picks[variant_idx][0] == "omnivoice_pool"
+                            else None
+                        ),
+                    )
             except Exception as e:
                 n_failed += 1
                 logging.exception(f"FAILED dialogue={dialogue_id} variant={variant_idx} ({e})")
@@ -1965,7 +2473,7 @@ def main(args):
             for ch, name in enumerate(spk_names):
                 if merged_speech.size(0) > ch:
                     spk_wav_fpath = variant_dir / f"{name}.wav"
-                    torchaudio.save(str(spk_wav_fpath), merged_speech[ch:ch + 1], TARGET_SR)
+                    torchaudio.save(str(spk_wav_fpath), merged_speech[ch : ch + 1], TARGET_SR)
                     total_speech_meta[f"{name}_wav"] = str(spk_wav_fpath)
 
             bc_cnt = 0
@@ -2000,7 +2508,12 @@ def main(args):
                     "min_sec": PAUSE_MIN_SEC,
                     "max_sec": PAUSE_MAX_SEC,
                     "percentiles_fitted": {
-                        "min": 0.001, "P1": 0.007, "P25": 0.195, "P50": 0.47, "P75": 0.94, "max": 4.0
+                        "min": 0.001,
+                        "P1": 0.007,
+                        "P25": 0.195,
+                        "P50": 0.47,
+                        "P75": 0.94,
+                        "max": 4.0,
                     },
                 },
                 "overlap_max_sec": USER_INTERRUPT_OVERLAP_SEC,

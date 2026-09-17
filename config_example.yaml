@@ -165,6 +165,14 @@ stage5_tts:
   seed: 42
   target_sr: 24000
   prompt_sr: 16000
+  profile: false              # log per-dialogue generate/align timings
+  # When align+BC placement happens relative to generation:
+  #   auto   -> defer if aligner.batch else inline (recommended)
+  #   inline -> align and place each host utterance right after it renders
+  #   defer  -> render the whole dialogue, then align (batchable) and place;
+  #             the gap/pause timing is unchanged (placement still happens
+  #             before the merged timeline is assembled)
+  bc_placement: auto
   timing:
     gap:
       exp_scale: 0.7067
@@ -197,6 +205,17 @@ stage5_tts:
     model: Qwen/Qwen3-ForcedAligner-0.6B-hf
     dtype: auto               # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
     device: cuda              # cuda | cpu (falls back to stage5_tts.device if omitted)
+    granularity: utterance    # utterance (whole turn) | sentence (per generated unit)
+    max_secs: 240             # skip the model above this audio length -> fallback
+    fallback: proportional    # drop | proportional  (proportional keeps BC, approximate)
+    batch: false              # batch the aligner forward (implies bc_placement: defer)
+    batch_size: 8
+  omnivoice:
+    batch: false              # batch an utterance's text units (needs a voice pool)
+    batch_size: 8
+    max_unit_chars: 400       # a longer unit is generated on its own, after the rest
+    max_retries: 2            # retries per unit/batch before it becomes silence
+    fallback_action: silence  # silence (0.2s) after retries are exhausted
   voice:
     user_instruct: "male, northern accent"
     assistant_instruct: "female, gentle"

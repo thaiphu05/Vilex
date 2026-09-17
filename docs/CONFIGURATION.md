@@ -70,7 +70,7 @@ you only need the env vars to override a machine-specific value at runtime.
 | `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |
 | `stage4_synthesis` | `max_turns`, `max_dialogues`, `max_workers`, temperatures, `guards`, `ft_terminal_punct`, `hesitations`, `judge`, `hf` |
 | `stage4b_backchannel` | `max_tokens`, `temperature`, `max_retries`, `valid_max_words`, fallback pools |
-| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `aligner` (`model`/`dtype`/`device`, Qwen3 forced aligner), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `profile`, `bc_placement` (auto/inline/defer), `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `aligner` (`model`/`dtype`/`device`, `granularity`, `max_secs`, `fallback`, `batch`), `omnivoice` (`batch`, `batch_size`, `max_unit_chars`, `max_retries`, `fallback_action`), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
 
 ### Offline Stage 1 source (`paths.source` / `paths.parsed_source_root`)
 
