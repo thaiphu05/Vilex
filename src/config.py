@@ -8,7 +8,7 @@ Resolution order (highest first):
 
 1. Environment overrides -- any ``VILEX_<PATH>`` variable, where ``<PATH>`` is
    the dotted config path with ``__`` as the separator, e.g.
-   ``VILEX_LLM__TEMPERATURE=0.3`` or ``VILEX_STAGE5_TTS__TAGS__RENDER=true``.
+   ``VILEX_LLM__TEMPERATURE=0.3`` or ``VILEX_STAGE5__TAGS__RENDER=true``.
 2. The YAML file selected by, in order: the explicit ``path`` argument, the
    ``VILEX_CONFIG`` env var, ``./config.yaml``, then ``<repo>/config.yaml``.
 3. In-code defaults -- each module keeps its own constants as a fallback, used
@@ -20,6 +20,7 @@ deliberately *not* read from the YAML; keep them in the environment.
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -94,6 +95,75 @@ def _parse_env_value(raw: str) -> Any:
     return raw
 
 
+# Legacy Stage 5 env names (flat `stage5_tts.*`) mapped onto the per-sub-stage
+# keys. Kept for one migration cycle so existing runner/notebook exports keep
+# working; the new names always win if both are set.
+_LEGACY_STAGE5_ENV = {
+    "STAGE5_TTS__BACKEND": "STAGE5_1B_RENDER__BACKEND",
+    "STAGE5_TTS__DEVICE": "STAGE5_1B_RENDER__DEVICE",
+    "STAGE5_TTS__OMNIVOICE__BATCH_SIZE": "STAGE5_1B_RENDER__OMNIVOICE__BATCH_SIZE",
+    "STAGE5_TTS__OMNIVOICE__MAX_UNIT_CHARS": "STAGE5_1B_RENDER__OMNIVOICE__MAX_UNIT_CHARS",
+    "STAGE5_TTS__OMNIVOICE__MAX_RETRIES": "STAGE5_1B_RENDER__OMNIVOICE__MAX_RETRIES",
+    "STAGE5_TTS__OMNIVOICE__FALLBACK_ACTION": "STAGE5_1B_RENDER__OMNIVOICE__FALLBACK_ACTION",
+    "STAGE5_TTS__ALIGNER__MODEL": "STAGE5_2A_ALIGN__ALIGNER__MODEL",
+    "STAGE5_TTS__ALIGNER__DTYPE": "STAGE5_2A_ALIGN__ALIGNER__DTYPE",
+    "STAGE5_TTS__ALIGNER__DEVICE": "STAGE5_2A_ALIGN__ALIGNER__DEVICE",
+    "STAGE5_TTS__ALIGNER__GRANULARITY": "STAGE5_2A_ALIGN__ALIGNER__GRANULARITY",
+    "STAGE5_TTS__ALIGNER__MAX_SECS": "STAGE5_2A_ALIGN__ALIGNER__MAX_SECS",
+    "STAGE5_TTS__ALIGNER__FALLBACK": "STAGE5_2A_ALIGN__ALIGNER__FALLBACK",
+    "STAGE5_TTS__ALIGNER__BATCH": "STAGE5_2A_ALIGN__ALIGNER__BATCH",
+    "STAGE5_TTS__ALIGNER__BATCH_SIZE": "STAGE5_2A_ALIGN__ALIGNER__BATCH_SIZE",
+    "STAGE5_TTS__AUDIO__VAD_THRESHOLD": "STAGE5_2A_ALIGN__VAD_THRESHOLD",
+    "STAGE5_TTS__AUDIO__MAX_PROMPT_SECS": "STAGE5_2A_ALIGN__MAX_PROMPT_SECS",
+    "STAGE5_TTS__PROFILE": "STAGE5_2B_ASSEMBLE__PROFILE",
+    "STAGE5_TTS__BC_PLACEMENT": "STAGE5_2B_ASSEMBLE__BC_PLACEMENT",
+    "STAGE5_TTS__TIMING__GAP__EXP_SCALE": "STAGE5_2B_ASSEMBLE__TIMING__GAP__EXP_SCALE",
+    "STAGE5_TTS__TIMING__GAP__MIN_SEC": "STAGE5_2B_ASSEMBLE__TIMING__GAP__MIN_SEC",
+    "STAGE5_TTS__TIMING__GAP__MAX_SEC": "STAGE5_2B_ASSEMBLE__TIMING__GAP__MAX_SEC",
+    "STAGE5_TTS__TIMING__PAUSE__EXP_SCALE": "STAGE5_2B_ASSEMBLE__TIMING__PAUSE__EXP_SCALE",
+    "STAGE5_TTS__TIMING__PAUSE__MIN_SEC": "STAGE5_2B_ASSEMBLE__TIMING__PAUSE__MIN_SEC",
+    "STAGE5_TTS__TIMING__PAUSE__MAX_SEC": "STAGE5_2B_ASSEMBLE__TIMING__PAUSE__MAX_SEC",
+    "STAGE5_TTS__TIMING__INTRA_PAUSE__EXP_SCALE": "STAGE5_2B_ASSEMBLE__TIMING__INTRA_PAUSE__EXP_SCALE",
+    "STAGE5_TTS__TIMING__INTRA_PAUSE__MIN_SEC": "STAGE5_2B_ASSEMBLE__TIMING__INTRA_PAUSE__MIN_SEC",
+    "STAGE5_TTS__TIMING__INTRA_PAUSE__MAX_SEC": "STAGE5_2B_ASSEMBLE__TIMING__INTRA_PAUSE__MAX_SEC",
+    "STAGE5_TTS__TIMING__USER_INTERRUPT_OVERLAP_SEC": "STAGE5_2B_ASSEMBLE__TIMING__USER_INTERRUPT_OVERLAP_SEC",
+    "STAGE5_TTS__TIMING__USER_INTERRUPT_PROB": "STAGE5_2B_ASSEMBLE__TIMING__USER_INTERRUPT_PROB",
+    "STAGE5_TTS__AUDIO__TARGET_LUFS": "STAGE5_2B_ASSEMBLE__AUDIO__TARGET_LUFS",
+    "STAGE5_TTS__AUDIO__NOISE_FLOOR_AMP": "STAGE5_2B_ASSEMBLE__AUDIO__NOISE_FLOOR_AMP",
+    "STAGE5_TTS__AUDIO__BACKCHANNEL_ATTENUATION": "STAGE5_2B_ASSEMBLE__AUDIO__BACKCHANNEL_ATTENUATION",
+    "STAGE5_TTS__AUDIO__SAVE_ALIGN_JSON": "STAGE5_2B_ASSEMBLE__AUDIO__SAVE_ALIGN_JSON",
+    "STAGE5_TTS__NUM_VARIANTS": "STAGE5__NUM_VARIANTS",
+    "STAGE5_TTS__MAX_DIALOGUES": "STAGE5__MAX_DIALOGUES",
+    "STAGE5_TTS__SEED": "STAGE5__SEED",
+    "STAGE5_TTS__LANGUAGE": "STAGE5__LANGUAGE",
+    "STAGE5_TTS__TARGET_SR": "STAGE5__TARGET_SR",
+    "STAGE5_TTS__PROMPT_SR": "STAGE5__PROMPT_SR",
+    "STAGE5_TTS__TAGS__RENDER": "STAGE5__TAGS__RENDER",
+    "STAGE5_TTS__TAGS__SUPPORTED": "STAGE5__TAGS__SUPPORTED",
+}
+
+
+def _translate_legacy_stage5_env() -> None:
+    """Copy any ``VILEX_STAGE5_TTS__*`` var onto its new sub-stage name.
+
+    Only fills names that are not already set explicitly, so the new keys always
+    win during a partial migration.
+    """
+    translated = []
+    for old_suffix, new_suffix in _LEGACY_STAGE5_ENV.items():
+        old_key = _ENV_PREFIX + old_suffix
+        new_key = _ENV_PREFIX + new_suffix
+        if old_key in os.environ and new_key not in os.environ:
+            os.environ[new_key] = os.environ[old_key]
+            translated.append(old_key)
+    if translated:
+        print(
+            "[config] deprecated VILEX_STAGE5_TTS__* env translated to the new "
+            f"stage5_1b_render/stage5_2a_align/stage5_2b_assemble names: {sorted(translated)}",
+            file=sys.stderr,
+        )
+
+
 def _apply_env_overrides(cfg: Dict[str, Any]) -> None:
     for key, raw in os.environ.items():
         if not key.startswith(_ENV_PREFIX) or key == _ENV_PREFIX + "CONFIG":
@@ -107,6 +177,7 @@ def load_config(path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     Returns an empty dict when no YAML file is found, letting callers fall back
     to their in-code defaults.
     """
+    _translate_legacy_stage5_env()
     cfg: Dict[str, Any] = {}
     resolved = resolve_config_path(path)
     if resolved is not None:

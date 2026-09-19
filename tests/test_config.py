@@ -85,7 +85,11 @@ def test_repo_config_declares_every_stage_section():
         "stage1_75_disfluency",
         "stage4_synthesis",
         "stage4b_backchannel",
-        "stage5_tts",
+        "stage5",
+        "stage5_1a_prep",
+        "stage5_1b_render",
+        "stage5_2a_align",
+        "stage5_2b_assemble",
     ):
         assert key in cfg, f"config_example.yaml is missing the {key!r} section"
 
@@ -110,9 +114,7 @@ def test_resolve_llm_model_falls_back_to_default():
 def test_apply_runtime_config_bridges_gemini_knobs(monkeypatch):
     monkeypatch.delenv("GEMINI_MIN_INTERVAL", raising=False)
     monkeypatch.delenv("GEMINI_LOCATION", raising=False)
-    apply_runtime_config(
-        {"llm": {"gemini_min_interval": 2.5, "gemini_location": "europe-west1"}}
-    )
+    apply_runtime_config({"llm": {"gemini_min_interval": 2.5, "gemini_location": "europe-west1"}})
     assert os.environ["GEMINI_MIN_INTERVAL"] == "2.5"
     assert os.environ["GEMINI_LOCATION"] == "europe-west1"
 

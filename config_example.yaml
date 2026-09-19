@@ -25,6 +25,7 @@ paths:
   results_dis_root: data/results_vi_dis  # Stage 1.75 output
   synthesis_root: data/vi_tt             # Stage 4 output
   bc_root: data/vi_tt_bc                 # Stage 4b output
+  stage5_work_root: data/vi_stage5_work  # Stage 5.1a–5.2b intermediates
   audio_root: data/vi_audio              # Stage 5 output
   # Stage 1 source: "auto" uses the raw corpora / HF Hub; "parsed_source" reads
   # the offline per-dialogue dump at <parsed_source_root>/<dataset>/<split>/*.json
@@ -44,7 +45,7 @@ paths:
   input_paths:
     persuader: ""
     socraticlm: ""
-  voice_clone_pool: data/voice_clone     # Stage 5 reference wavs + .txt sidecars
+  voice_clone_pool: voice_clone          # Stage 5 reference wavs + .txt sidecars
   logdir: data/logs                      # used by the run_*.sh wrappers only (not by any stage)
 
 # ---------------------------------------------------------------- llm routing
@@ -160,24 +161,84 @@ stage4b_backchannel:
     vi: ["ừ", "à", "vâng", "phải", "ồ"]
     en: ["mhm", "yeah", "right", "okay", "oh"]
 
-# ---------------------------------------------------------------- Stage 5
-stage5_tts:
-  backend: omnivoice        # chatterbox | omnivoice
-  language: vi              # vi | en
-  device: cpu               # cpu | cuda
+# ------------------------------------------------------------- Stage 5 (shared)
+# One block per Stage 5 sub-stage:
+#   stage5            shared: mode/seed/language/tags/backchannels/voice
+#   stage5_1a_prep    5.1a  CPU  text prep   (tts_render/stage5a_prep.py)
+#   stage5_1b_render  5.1b  GPU  OmniVoice   (stage5b_render.py)
+#   stage5_2a_align   5.2a  GPU  VAD + Qwen3 (stage5c_align.py)
+#   stage5_2b_assemble 5.2b CPU  placement/timing/LUFS (stage5d_assemble.py)
+# The monolithic convert_spoken.py reads the same tree via monolithic_view().
+stage5:
+  mode: split                  # split | monolithic
   num_variants: 1
-  max_dialogues: 0          # 0 = all
-  seed: 42
+  max_dialogues: 0             # 0 = all
+  seed: null                   # null -> run.seed
+  language: null               # null -> run.target_language (vi)
   target_sr: 24000
   prompt_sr: 16000
-  profile: false              # log per-dialogue generate/align timings
-  # When align+BC placement happens relative to generation:
-  #   auto   -> defer if aligner.batch else inline (recommended)
-  #   inline -> align and place each host utterance right after it renders
-  #   defer  -> render the whole dialogue, then align (batchable) and place;
-  #             the gap/pause timing is unchanged (placement still happens
-  #             before the merged timeline is assembled)
-  bc_placement: auto
+  tags:
+    render: false              # keep supported tags for the TTS to voice
+    supported:
+      - "[laughter]"
+      - "[sigh]"
+      - "[confirmation-en]"
+      - "[question-en]"
+      - "[question-ah]"
+      - "[question-oh]"
+      - "[question-ei]"
+      - "[question-yi]"
+      - "[surprise-ah]"
+      - "[surprise-oh]"
+      - "[surprise-wa]"
+      - "[surprise-yo]"
+      - "[dissatisfaction-hnn]"
+  backchannels:
+    candidates:
+      en: ["yeah", "uh-huh", "mm-hmm", "right", "okay"]
+      vi: ["ưm", "à", "ừ", "vâng", "phải", "ồ", "mm-hm", "uh huh", "ok",
+           "ừ [confirmation-en]", "ồ [surprise-oh]", "[laughter]", "[sigh]"]
+    rising_tokens: ["yeah", "ưm", "vâng", "à", "ừ"]
+  voice:
+    user_instruct: "male, northern accent"
+    assistant_instruct: "female, gentle"
+
+# ------------------------------------------------------------- Stage 5.1a prep
+stage5_1a_prep:
+  work_root: null              # null -> paths.stage5_work_root
+
+# ----------------------------------------------------------- Stage 5.1b render
+stage5_1b_render:
+  backend: omnivoice           # omnivoice (VI); Chatterbox/EN is monolithic-only
+  device: cpu                 # cuda | cpu
+  speed: 1.2
+  language: null               # null -> stage5.language
+  omnivoice:
+    batch_size: 8
+    max_unit_chars: 400        # a longer unit is generated on its own
+    max_retries: 2
+    fallback_action: silence   # silence (0.2s) after retries are exhausted
+
+# ------------------------------------------------------------ Stage 5.2a align
+stage5_2a_align:
+  device: cuda                 # Qwen3 aligner device (Silero VAD always runs on CPU)
+  language: null               # null -> stage5.language
+  vad_threshold: 0.3           # Silero VAD speech probability (CPU, tiny model)
+  max_prompt_secs: 10          # reference clip clamp
+  aligner:
+    model: Qwen/Qwen3-ForcedAligner-0.6B-hf
+    dtype: auto                # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
+    granularity: utterance     # utterance (whole turn) | sentence (per generated unit)
+    max_secs: 240              # skip the model above this length -> fallback
+    fallback: proportional     # drop | proportional
+    batch: false               # batch the aligner forward (implies bc_placement: defer)
+    batch_size: 8
+
+# --------------------------------------------------------- Stage 5.2b assemble
+stage5_2b_assemble:
+  profile: false               # log per-dialogue generate/align timings
+  bc_placement: auto           # auto | inline | defer (auto -> defer if aligner.batch)
+  cleanup_intermediate: true   # delete raw/trimmed unit wavs after 5.2b
   timing:
     gap:
       exp_scale: 0.7067
@@ -197,64 +258,6 @@ stage5_tts:
     target_lufs: -23.0
     noise_floor_amp: 0.000
     backchannel_attenuation: 0.8
-    vad_threshold: 0.3
-    max_prompt_secs: 10
-    # Write per-variant word-level forced-alignment JSON for training on timestamps:
-    #   alignment_user.json + alignment_assistant.json (absolute times in the merged
-    #   timeline; utterances from the Qwen3 forced aligner, backchannels from
-    #   alignment when >1 word else an even split of the clip span). Enabling it
-    #   makes the align files part of the resume/skip check, so existing variants
-    #   are re-rendered.
+    # Write per-variant word-level forced-alignment JSON (alignment_user.json /
+    # alignment_assistant.json); also part of the resume/skip check when on.
     save_align_json: false
-  aligner:                    # Qwen3-ForcedAligner: word timestamps for BC anchoring
-    model: Qwen/Qwen3-ForcedAligner-0.6B-hf
-    dtype: auto               # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
-    device: cuda              # cuda | cpu (falls back to stage5_tts.device if omitted)
-    granularity: utterance    # utterance (whole turn) | sentence (per generated unit)
-    max_secs: 240             # skip the model above this audio length -> fallback
-    fallback: proportional    # drop | proportional  (proportional keeps BC, approximate)
-    batch: false              # batch the aligner forward (implies bc_placement: defer)
-    batch_size: 8
-  omnivoice:
-    batch: false              # batch an utterance's text units (needs a voice pool)
-    batch_size: 8
-    max_unit_chars: 400       # a longer unit is generated on its own, after the rest
-    max_retries: 2            # retries per unit/batch before it becomes silence
-    fallback_action: silence  # silence (0.2s) after retries are exhausted
-  voice:
-    user_instruct: "male, northern accent"
-    assistant_instruct: "female, gentle"
-  tags:
-    render: false           # keep supported tags for the TTS to voice
-    supported:
-      - "[laughter]"
-      - "[sigh]"
-      - "[confirmation-en]"
-      - "[question-en]"
-      - "[question-ah]"
-      - "[question-oh]"
-      - "[question-ei]"
-      - "[question-yi]"
-      - "[surprise-ah]"
-      - "[surprise-oh]"
-      - "[surprise-wa]"
-      - "[surprise-yo]"
-      - "[dissatisfaction-hnn]"
-  backchannels:
-    candidates:
-      en: ["yeah", "uh-huh", "mm-hmm", "right", "okay"]
-      vi:
-        - "ưm"
-        - "à"
-        - "ừ"
-        - "vâng"
-        - "phải"
-        - "ồ"
-        - "mm-hm"
-        - "uh huh"
-        - "ok"
-        - "ừ [confirmation-en]"
-        - "ồ [surprise-oh]"
-        - "[laughter]"
-        - "[sigh]"
-    rising_tokens: ["yeah", "ưm", "vâng", "à", "ừ"]

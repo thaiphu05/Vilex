@@ -12,7 +12,10 @@ import sys
 from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))  # repo root
+sys.path.insert(0, str(_Path(__file__).resolve().parent))  # tts_render/
 from src.config import cfg_get, load_config  # noqa: E402
+
+from stage5_config import monolithic_view, resolve_stage5  # noqa: E402
 
 import argparse
 import shutil
@@ -50,23 +53,23 @@ TTS_LANGUAGE = "vi"  # "vi" -> OmniVoice; "en" -> Chatterbox
 # When True (--omnivoice_render_tags) renderable paralinguistic tags are kept in
 # the TTS text so OmniVoice speaks them; unknown tags are still stripped.
 RENDER_TAGS = False
-# When True (stage5_tts.audio.save_align_json) write per-variant word-level
+# When True (stage5_2b_assemble.audio.save_align_json) write per-variant word-level
 # forced-alignment JSON (alignment_user.json / alignment_assistant.json).
 SAVE_ALIGN_JSON = False
-# Forced aligner (stage5_tts.aligner.*): Qwen3-ForcedAligner gives word-level
+# Forced aligner (stage5_2a_align.aligner.*): Qwen3-ForcedAligner gives word-level
 # timestamps for a known transcript, used to anchor backchannels to word-ends
 # and to build the alignment JSON. dtype "auto" -> bfloat16 on GPUs that support
 # it, else float16.
 ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 ALIGNER_DTYPE = "auto"
 ALIGNER_DEVICE = "cuda"
-# Aligner behaviour (stage5_tts.aligner.*).
+# Aligner behaviour (stage5_2a_align.aligner.*).
 ALIGN_GRANULARITY = "utterance"  # utterance | sentence  (sentence = align each generated unit)
 ALIGN_MAX_SECS = 240.0  # skip the model above this audio length -> fallback
 ALIGN_FALLBACK = "proportional"  # drop | proportional
 ALIGN_BATCH = False  # batch the aligner forward across a dialogue's hosts (needs defer)
 ALIGN_BATCH_SIZE = 8
-# Stage 5 extras (stage5_tts.*).
+# Stage 5 extras (stage5_1b_render/stage5_2a_align/stage5_2b_assemble.*).
 PROFILE = False  # log per-dialogue generate/vad/align timings
 BC_PLACEMENT = "auto"  # auto | inline | defer (auto -> defer when ALIGN_BATCH else inline)
 OMNI_BATCH = False  # batch the text units of one utterance into a single generate() call
@@ -176,6 +179,7 @@ PAUSE_INTRA_MAX_SEC = 1.00
 USER_INTERRUPT_OVERLAP_SEC = 0.64  # max overlap when user interrupts assistant (seconds)
 USER_INTERRUPT_PROB = 0.5  # probability that user interrupts assistant [reduced from 0.6]
 MAX_PROMPT_SECS = 10  # max seconds of audio to keep in cumulative voice prompt
+VAD_THRESHOLD = 0.3  # Silero VAD speech probability (stage5_2a_align.vad_threshold)
 
 # Final 2-channel master normalization (Stage 5 post-production).
 TARGET_LUFS = -23.0  # EBU R128 integrated-loudness target for the assembled track
@@ -1002,7 +1006,7 @@ def _save_cumulative_prompt(audio: torch.Tensor, path: str):
 
 
 def _resolve_aligner_dtype(dtype_name, device):
-    """Map stage5_tts.aligner.dtype to a torch dtype.
+    """Map stage5_2a_align.aligner.dtype to a torch dtype.
 
     ``auto`` picks bfloat16 when the GPU supports it (Ampere+) and float16
     otherwise (e.g. T4/Turing), so the aligner never crashes on a bf16-less box.
@@ -1708,7 +1712,7 @@ def main_process(
                     if st_idx != len(units) - 1:
                         speech_16k = _resample(speech_, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
                         speech_timestamps = get_speech_timestamps(
-                            speech_16k, vad_model, threshold=0.3, sampling_rate=PROMPT_SR
+                            speech_16k, vad_model, threshold=VAD_THRESHOLD, sampling_rate=PROMPT_SR
                         )
                         try:
                             if speech_timestamps:
@@ -1773,7 +1777,7 @@ def main_process(
                 # VAD on full utterance
                 tts_speech_16k = _resample(tts_speech, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
                 speech_timestamps = get_speech_timestamps(
-                    tts_speech_16k, vad_model, threshold=0.3, sampling_rate=PROMPT_SR
+                    tts_speech_16k, vad_model, threshold=VAD_THRESHOLD, sampling_rate=PROMPT_SR
                 )
 
                 if len(speech_timestamps) > 0:
@@ -2025,13 +2029,13 @@ def main_process(
 
 
 def _apply_tts_config(cfg):
-    """Push config.yaml (stage5_tts.*) onto the module-level knobs."""
+    """Push config.yaml (stage5_1b_render/stage5_2a_align/stage5_2b_assemble.*) onto the module-level knobs."""
     global TARGET_SR, PROMPT_SR
     global GAP_EXP_SCALE, GAP_MIN_SEC, GAP_MAX_SEC
     global PAUSE_EXP_SCALE, PAUSE_MIN_SEC, PAUSE_MAX_SEC
     global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
-    global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON
+    global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON, VAD_THRESHOLD
     global ALIGNER_MODEL, ALIGNER_DTYPE, ALIGNER_DEVICE
     global ALIGN_GRANULARITY, ALIGN_MAX_SECS, ALIGN_FALLBACK, ALIGN_BATCH, ALIGN_BATCH_SIZE
     global PROFILE, BC_PLACEMENT, _BC_PLACEMENT_RESOLVED
@@ -2040,7 +2044,7 @@ def _apply_tts_config(cfg):
     global OMNI_PARALINGUIST_TAGS, RENDERABLE_TAGS, _PARALINGUIST_RE
     global DEFAULT_BC_CANDIDATES, DEFAULT_BC_CANDIDATES_VI, _BC_RISING_TOKENS
 
-    s5 = cfg_get(cfg, "stage5_tts", {})
+    s5 = monolithic_view(resolve_stage5(cfg))
     timing = s5.get("timing", {}) if isinstance(s5.get("timing"), dict) else {}
     audio = s5.get("audio", {}) if isinstance(s5.get("audio"), dict) else {}
     tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
@@ -2075,6 +2079,7 @@ def _apply_tts_config(cfg):
     TARGET_LUFS = audio.get("target_lufs", TARGET_LUFS)
     NOISE_FLOOR_AMP = audio.get("noise_floor_amp", NOISE_FLOOR_AMP)
     SAVE_ALIGN_JSON = bool(audio.get("save_align_json", SAVE_ALIGN_JSON))
+    VAD_THRESHOLD = float(audio.get("vad_threshold", VAD_THRESHOLD))
 
     ALIGNER_MODEL = aligner.get("model") or ALIGNER_MODEL
     ALIGNER_DTYPE = aligner.get("dtype") or ALIGNER_DTYPE
@@ -2094,8 +2099,9 @@ def _apply_tts_config(cfg):
         else "inline"
     )
 
-    OMNI_BATCH = bool(omni.get("batch", OMNI_BATCH))
     OMNI_BATCH_SIZE = int(omni.get("batch_size", OMNI_BATCH_SIZE))
+    # No `batch` flag any more: batching is enabled by batch_size > 1 (1 = off).
+    OMNI_BATCH = OMNI_BATCH_SIZE > 1
     OMNI_MAX_UNIT_CHARS = int(omni.get("max_unit_chars", OMNI_MAX_UNIT_CHARS))
     OMNI_MAX_RETRIES = int(omni.get("max_retries", OMNI_MAX_RETRIES))
     OMNI_FALLBACK_ACTION = omni.get("fallback_action", OMNI_FALLBACK_ACTION)
@@ -2118,7 +2124,7 @@ def _apply_tts_config(cfg):
 def _build_tts_args(cfg):
     from types import SimpleNamespace
 
-    s5 = cfg_get(cfg, "stage5_tts", {})
+    s5 = monolithic_view(resolve_stage5(cfg))
     paths = cfg_get(cfg, "paths", {})
     voice = s5.get("voice", {}) if isinstance(s5.get("voice"), dict) else {}
     tags = s5.get("tags", {}) if isinstance(s5.get("tags"), dict) else {}
@@ -2223,9 +2229,9 @@ def main(args):
 
         if len(speaker_pool) < args.num_variants:
             raise SystemExit(
-                f"stage5_tts.num_variants={args.num_variants} needs that many distinct user "
+                f"stage5.num_variants={args.num_variants} needs that many distinct user "
                 f"voices, but {args.librispeech_root} yields only {len(speaker_pool)} speakers "
-                f"for subsets {libri_subsets}. Lower stage5_tts.num_variants, or point the code's "
+                f"for subsets {libri_subsets}. Lower stage5.num_variants, or point the code's "
                 "librispeech_root at a full LibriSpeech download "
                 "(https://www.openslr.org/12) and widen librispeech_subsets. The bundled sample "
                 "holds 12 speakers."
@@ -2288,7 +2294,11 @@ def main(args):
         except Exception as e:  # pragma: no cover - optional dependency
             logging.warning("perth unavailable; Chatterbox watermark disabled: %s", e)
 
-    # Load models
+    # Load models. Silero VAD stays on CPU on purpose: the model is ~2 MB, one
+    # 30 ms chunk takes <1 ms on a single CPU thread, and it is called on short
+    # CPU-resident 16 kHz segments many times per dialogue -- a GPU round-trip
+    # would cost more in H2D/D2H copies than it saves. `stage5_2a_align.device`
+    # is the forced-aligner device only.
     vad_model = load_silero_vad()
     if TTS_BACKEND == "omnivoice":
         from omnivoice import OmniVoice
@@ -2334,14 +2344,16 @@ def main(args):
     # first generated unit seeds the clone for every later one, so units depend
     # on each other and cannot be batched.
     if OMNI_BATCH and TTS_BACKEND == "omnivoice" and _VOICE_POOL is None:
-        logging.warning("omnivoice.batch=true needs a voice pool; falling back to sequential.")
+        logging.warning("omnivoice.batch_size>1 needs a voice pool; falling back to sequential.")
         OMNI_BATCH = False
 
     logging.info(
-        "Stage 5: bc_placement=%s (requested %s), aligner.batch=%s, omnivoice.batch=%s, profile=%s",
+        "Stage 5: bc_placement=%s (requested %s), aligner.batch=%s, omnivoice.batch_size=%s "
+        "(batch=%s), profile=%s",
         _BC_PLACEMENT_RESOLVED,
         BC_PLACEMENT,
         ALIGN_BATCH,
+        OMNI_BATCH_SIZE,
         OMNI_BATCH,
         PROFILE,
     )
