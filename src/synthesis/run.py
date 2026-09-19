@@ -102,7 +102,7 @@ def _build_args(cfg):
     hf = s4.get("hf", {}) if isinstance(s4.get("hf"), dict) else {}
     judge = s4.get("judge", {}) if isinstance(s4.get("judge"), dict) else {}
     return SimpleNamespace(
-        input_root=paths.get("results_dis_root", "data/results_vi_dis"),
+        input_root=paths.get("results_root", "data/results_vi"),
         save_root=paths.get("synthesis_root", "data/vi_tt"),
         max_dialogues=s4.get("max_dialogues", 1000),
         llm_model_name=resolve_llm_model(llm, "writer_model", "gpt-4.1"),

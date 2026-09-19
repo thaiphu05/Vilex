@@ -49,8 +49,6 @@ run() {
 }
 
 run stage1 "$PY -m src.speechify_run"
-run stage1_5 "$PY -m src.cross_turn_slots"
-run stage1_75 "$PY -m src.disfluency"
 run stage4 "$PY -m src.synthesis.run"
 run stage4b "$PY -m src.synthesis.run_add_bc"
 

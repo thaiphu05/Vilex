@@ -110,7 +110,7 @@ Mục đích: sinh lại hội thoại từng lượt, sample hành vi tại slo
 
 Steps (`speechify_turn_by_turn` in `src/synthesis/core.py`):
 
-1. Read Stage 1 JSON from `paths.results_dis_root` (`text_dialogue_<dataset>/<split>/*.json`). `stage4_synthesis.max_dialogues` (15), `stage4_synthesis.max_turns` (0 = auto) bound cost. Existing output skipped (resume).
+1. Read Stage 1 JSON from `paths.results_root` (`text_dialogue_<dataset>/<split>/*.json`). `stage4_synthesis.max_dialogues` (15), `stage4_synthesis.max_turns` (0 = auto) bound cost. Existing output skipped (resume).
 2. Writer LLM (`llm.writer_model`) generates raw turn: user prompt (brief, disfluency allowed) vs assistant prompt (concise, no disfluency). VI appends `LANG_DIRECTIVE[vi]`.
 3. Sanitize (`sanitize_utterance`): strip `<think>` tags, code fences, `role:`/`index)` prefixes, quotes; em-dash → comma. Contamination → retry up to 3 with corrective reminder, temp `+0.1` per attempt.
 4. If turn is user: run Stage 2 slot detection → query predictor (HF adapter takes priority, else `llm.tt_model` chat model).
@@ -139,7 +139,7 @@ Steps (`main_process`):
 3. Synthesize sentence by sentence (`generate_audio`), cache backchannels (LRU). Empty audio → 0.2s silence guard.
 4. Silero VAD trims leading/trailing silence per sentence for tight joins.
 5. Timing layer 1 (`aggregate_speech`): same speaker joins directly; turn change → `0.16s` white-noise gap (`-44dBFS`); interrupt → cross-fade overlap `0.45s`–`0.64s`.
-6. Timing layer 2 (backchannels only): the **Qwen3 forced aligner** (`stage5_2a_align.aligner`, `Qwen/Qwen3-ForcedAligner-0.6B-hf`) anchors BC to word-end timestamps.
+6. Timing layer 2 (backchannels only): **whisperx** forced alignment (`stage5_2a_align.aligner`) anchors BC to word-end timestamps.
 7. Mix stereo, normalize full track to LUFS `-23` (`pyloudnorm`, peak fallback).
 8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`, plus `alignment_user.json`/`alignment_assistant.json` when `stage5_2b_assemble.audio.save_align_json` is on. Variant with `dialogue.wav` + `meta.json` (and align files, if enabled) exists → skip (resume).
 
@@ -162,8 +162,8 @@ Schema chi tiết: `docs/CORPUS.md`. Licenses: `docs/DATA_LICENSES.md`.
 
 ## 12. Verification
 
-- `python -m pytest -q` (170 passed, 1 skipped expected; the skipped one needs the Stage 5 env).
-- `python -m py_compile` on 3 entry points: `src/speechify_run.py`, `src/synthesis/run.py`, `tts_render/convert_spoken.py`.
+- `python -m pytest -q` (all green; tests needing the Stage 5 env are skipped).
+- `python -m py_compile` on the entry points: `src/speechify_run.py`, `src/synthesis/run.py`, `tts_render/convert_spoken.py`, `tts_render/stage5c_align.py`.
 - Smoke: 1 dialogue end-to-end (e.g. `interviewer/work_0000`) Stages 1→5 on CPU, check `var00/dialogue.wav` + LUFS `-23`.
 - Troubleshooting: `docs/TROUBLESHOOTING.md`.
 

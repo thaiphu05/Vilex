@@ -129,8 +129,6 @@ def test_stage3_documents_the_token_classifier_not_post_hoc_calibration():
 DOCUMENTED_ENTRY_POINTS = {
     "src.prepare_corpus": "src/prepare_corpus.py",
     "src.speechify_run": "src/speechify_run.py",
-    "src.cross_turn_slots": "src/cross_turn_slots.py",
-    "src.disfluency": "src/disfluency.py",
     "src.train_turntaking_hf": "src/train_turntaking_hf.py",
     "src.inference_turntaking_hf": "src/inference_turntaking_hf.py",
     "src.inference_turntaking_llm": "src/inference_turntaking_llm.py",

@@ -22,8 +22,6 @@ outputs/
 output/
 results/
 results_vi/
-results_vi_xt/
-results_vi_dis/
 data-annotations/
 data-dialogues/
 # Downloaded raw upstream corpora (large, not shipped)

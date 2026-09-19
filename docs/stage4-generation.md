@@ -33,7 +33,7 @@ stage4_synthesis:
   max_dialogues: 15
   max_turns: 0        # 0 = auto = source length
 paths:
-  results_dis_root: data/results_vi_dis   # input (Stage 1.75 output)
+  results_root: data/results_vi           # input (Stage 1 output)
   synthesis_root: data/vi_tt              # output
 ```
 
@@ -69,8 +69,8 @@ base-model key here.
 
 `run.datasets` accepts `socraticlm | multiwoz | interviewer | negotiator |
 persuader | soda` (plus `all`); `run.splits` is `train | test`. Stage 4 reads
-`paths.results_dis_root` in the `text_dialogue_<dataset>/<split>/*.json` layout
-produced by the Stage 1.75 step — **not** the published HF layout; convert with
+`paths.results_root` in the `text_dialogue_<dataset>/<split>/*.json` layout
+produced by the Stage 1 step — **not** the published HF layout; convert with
 `tools/unpack_corpus.py --kind dialogues` first (see [CORPUS.md](CORPUS.md)).
 That half is train-only, so `test` needs dialogues of your own from Stage 1.
 Results are written to

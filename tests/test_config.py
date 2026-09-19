@@ -81,8 +81,6 @@ def test_repo_config_declares_every_stage_section():
         "paths",
         "llm",
         "stage1_speechify",
-        "stage1_5_cross_turn",
-        "stage1_75_disfluency",
         "stage4_synthesis",
         "stage4b_backchannel",
         "stage5",

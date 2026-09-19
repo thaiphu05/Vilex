@@ -1,7 +1,9 @@
 # AGENTS.md — Vilex
 
 5-stage pipeline: Vietnamese turn-taking dialogue synthesis (DuplexGen adaptation).
-Default path: Vietnamese (`--target_language vi`, Gemini, OmniVoice TTS).
+Default path: Vietnamese (`run.target_language: vi`, Gemini, OmniVoice TTS).
+All stage parameters live in `config.yaml` (sample: `config_example.yaml`); each
+entry point takes only an optional `--config PATH` (env override: `VILEX_*`).
 
 
 ## Two environments (never merge)
@@ -13,20 +15,20 @@ Default path: Vietnamese (`--target_language vi`, Gemini, OmniVoice TTS).
 ## Stage order (data pipeline)
 
 ```
-Stage 1  →  Stage 1.5  →  Stage 1.75  →  Stage 4  →  Stage 4b  →  Stage 5
-speechify    cross_turn     disfluency     synthesis     run_add_bc    TTS
-               _slots                                     (backchannel)
+Stage 1  →  Stage 4  →  Stage 4b  →  Stage 5
+speechify    synthesis    run_add_bc    TTS
+                           (backchannel)
 ```
 
-- `results_vi/` → `results_vi_xt/` → `results_vi_dis/` → `outputs/vi_tt/` → `outputs/vi_tt_bc/` → audio
-- Stage 4 reads `results_vi_dis` (not `results_vi`). Feed wrong dir → silent failure.
+- `results_root (data/results_vi)` → `synthesis_root (data/vi_tt)` → `bc_root (data/vi_tt_bc)` → audio
+- Stage 4 reads `paths.results_root` (Stage 1 output).
 
 Stage 5 has a split variant (VI/OmniVoice, batch-capable, 4 tiers) beside the
 monolithic `tts_render/convert_spoken.py`:
 
 ```
-5.1a prep (CPU) → 5.1b render (GPU, OmniVoice) → 5.2a align (GPU, Qwen3) → 5.2b assemble (CPU)
-stage5a_prep.py    stage5b_render.py              stage5c_align.py          stage5d_assemble.py
+5.1a prep (CPU) → 5.1b render (GPU, OmniVoice) → 5.2a align (GPU, whisperx) → 5.2b assemble (CPU)
+stage5a_prep.py    stage5b_render.py              stage5c_align.py             stage5d_assemble.py
 ```
 
 Intermediates live under `paths.stage5_work_root`; final output matches the
@@ -39,67 +41,57 @@ Stage 5: `python tts_render/convert_spoken.py` (file path, **different interpret
 
 ```bash
 # Stage 1 — spoken-style conversion
-python -m src.speechify_run -d interviewer --save_dir results_vi --llm_model_name gemini-3.6-flash
-
-# Stage 1.5 — cross-turn slots (rule-based, 0 API)
-python -m src.cross_turn_slots --input_root results_vi --output_root results_vi_xt \
-  --split train --dataset interviewer --perror 0.20 --seed 42 --target_language vi --roles both
-
-# Stage 1.75 — disfluency injection (rule-based, 0 API)
-python -m src.disfluency --input_root results_vi_xt --output_root results_vi_dis \
-  --split train --dataset interviewer --seed 42 --target_language vi
+python -m src.speechify_run
 
 # Stage 4 — dialogue generation + backchannel
-python -m src.synthesis.run -d interviewer -s train --input_root results_vi_dis \
-  --save_root outputs/vi_tt --llm_model_name gemini-3.6-flash \
-  --boundary_model_name gemini-3.6-flash --tt_model_name gemini-3.6-flash
-python -m src.synthesis.run_add_bc --input_root outputs/vi_tt \
-  --output_root outputs/vi_tt_bc --model_name gemini-3.6-flash
+python -m src.synthesis.run
+python -m src.synthesis.run_add_bc
 
 # Stage 5 — TTS (different interpreter)
-python tts_render/convert_spoken.py \
-  --input_glob 'outputs/vi_tt_bc/text_dialogue_interviewer/train/*.json' \
-  --save_dir outputs/audios --omnivoice_voice_pool voice_clone --num_variants 1 --device cpu
+python tts_render/convert_spoken.py
 ```
 
-Full batch scripts: `./run_vi_pipeline.sh` (1 dialogue), `./run_local_stages1-4.sh` (5 datasets).
+Full batch scripts: `./run_vi_pipeline.sh` (1 dialogue), `./run_local_stages1-4.sh` (5 datasets),
+`./run_vi_stage5_split.sh` (Stage 5 split).
 
 ## LLM routing (`src/llm_client.py`)
 
 Model name prefix determines backend. Stage 4 has 3 independent LLM roles:
-- `--llm_model_name` (writer), `--boundary_model_name` (slot detection), `--tt_model_name` (turn-taking predictor)
+- `llm.writer_model` (writer), `llm.boundary_model` (slot detection), `llm.tt_model` (turn-taking predictor); each falls back to `llm.model`
 - `gemini-*` → `GEMINI_API_KEY` or `GEMINI_CREDENTIALS` (Vertex AI). **Default.**
 - `gpt-*`, `o1`, `o3`, `o4` → `OPENAI_API_KEY`
-- `Qwen/...` → self-hosted at `--base_url` (default `localhost:8000`)
+- `claude*`/`*anthropic*` (or `llm.anthropic_mode`) → Anthropic Messages shim (`src/anthropic_client.py`)
+- anything else → self-hosted OpenAI-compatible `llm.base_url` (default `localhost:8000`)
 
 ## Testing
 
 ```bash
-pytest -q          # 80 tests expected, lives in tools/ and src/
+pytest -q          # 190 tests expected, lives in tests/
 ruff --select=E9,F # lint (CI gate)
 black --check      # format (CI gate)
 py_compile         # on entry points for smoke check
 ```
 
-Tests in `tools/test_*.py` and `src/test_*.py`. Stage 1.5/1.75 tests run 0 API calls.
+Tests in `tests/test_*.py`.
 
 ## Gotchas
 
-- **English = legacy.** Always pass `--target_language en --tts_backend chatterbox --language en` explicitly.
+- **English = legacy.** Set `run.target_language: en`, `stage5_1b_render.backend: chatterbox`, `stage5.language: en`.
 - **Stage 5 picks voices deterministically** via `seed + crc32(filename)`. Changing seed → different voices.
 - **`voice_clone/`** needs ≥2 `.wav`+`.txt` pairs or Stage 5 `SystemExit`.
 - **Silero VAD** trims silence per sentence. Short tokens (`"Ừm,"`) may produce empty audio → silent 0.2s guard.
-- **Gemini rate limit:** `_MIN_INTERVAL=13s`, 429 backoff in `src/gemini_client.py`. Free-tier ≈20 req/day/model.
+- **Gemini rate limit:** `llm.gemini_min_interval` (env `GEMINI_MIN_INTERVAL`), 429 backoff in `src/gemini_client.py`.
 - **Never hardcode `flash_attention_2`.** Use `src/hf_attn.py` (default `auto`: FA2 if importable, else SDPA).
 - **Stage 2 has no standalone command.** Slot detection runs inside Stage 4 (`src/synthesis/core.detect_turn_boundaries`).
 - **Scenario codes are case-sensitive.** `SOC` = soda, `soc` = socraticlm. Always route via `CODE2DIR` in `tools/unpack_corpus.py`.
+- **Stage 5 forced alignment uses whisperx** (`_load_forced_aligner` / `_align_words_once` in `tts_render/convert_spoken.py`); `stage5c_align.py` reuses those helpers.
 
 ## Key files
 
 | Area | Files |
 |---|---|
-| Entry points | `src/speechify_run.py`, `src/cross_turn_slots.py`, `src/disfluency.py`, `src/synthesis/run.py`, `src/synthesis/run_add_bc.py`, `tts_render/convert_spoken.py` |
+| Entry points | `src/speechify_run.py`, `src/synthesis/run.py`, `src/synthesis/run_add_bc.py`, `tts_render/convert_spoken.py` |
 | Core logic | `src/synthesis/core.py` (Stage 2+4), `src/llm_client.py`, `src/gemini_client.py` |
 | Training | `src/train_turntaking_hf.py`, `src/inference_turntaking_hf.py` |
 | Vendored | `vilex/tts/chatterbox/` (MIT, own `pyproject.toml`) |
-| Config | `pyproject.toml` (line-length 100, black+ruff exclude `vilex/tts/chatterbox`) |
+| Config | `src/config.py` + `config_example.yaml`; `pyproject.toml` (line-length 100, black+ruff exclude `vilex/tts/chatterbox`) |

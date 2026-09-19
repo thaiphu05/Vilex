@@ -168,28 +168,8 @@ data/raw/                    (upstream source corpora)
     │
     ▼
 ┌─────────────────────────────────────────────────────┐
-│  Stage 1.5: cross_turn_slots.py                     │
-│  Input:  data/results_vi/                                │
-│  Output: data/results_vi_xt/ (same layout)               │
-│  LLM:    0 calls (rule-based)                       │
-│  What:   Detect cross-turn dictation slots,         │
-│          inject misspeak-repair patterns             │
-└─────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────┐
-│  Stage 1.75: disfluency.py                          │
-│  Input:  data/results_vi_xt/                             │
-│  Output: data/results_vi_dis/ (same layout)              │
-│  LLM:    0 calls (rule-based)                       │
-│  What:   Inject FP/DM/EDIT/REP/COR/RST disfluency  │
-│          (Switchboard/Shriberg taxonomy)             │
-└─────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────┐
 │  Stage 4: synthesis/run.py                          │
-│  Input:  data/results_vi_dis/                            │
+│  Input:  data/results_vi/                            │
 │  Output: data/vi_tt/                             │
 │  LLM:    ~100 calls/dialogue                        │
 │          Writer (~20) + Boundary (~10) + TT (~40)   │
@@ -213,7 +193,7 @@ data/raw/                    (upstream source corpora)
 ┌─────────────────────────────────────────────────────┐
 │  Stage 5: tts_render/convert_spoken.py              │
 │  Input:  data/vi_tt_bc/                          │
-│  Output: outputs/audios/ (2-channel WAV)            │
+│  Output: data/vi_audio/ (2-channel WAV)             │
 │  LLM:    0 calls (OmniVoice/Chatterbox TTS)        │
 │  What:   Render dialogue to audio with voice-clone  │
 │          pool, inter-turn gaps, intra-turn pauses   │
@@ -225,13 +205,11 @@ data/raw/                    (upstream source corpora)
 | Stage | Input dir | Output dir | LLM calls | What changes |
 |---|---|---|---|---|
 | 1 | `data/raw/` | `data/results_vi/` | 1/dialogue | Text → spoken Vietnamese |
-| 1.5 | `data/results_vi/` | `data/results_vi_xt/` | 0 | Cross-turn slots + misspeak repair |
-| 1.75 | `data/results_vi_xt/` | `data/results_vi_dis/` | 0 | Disfluency injection |
-| 4 | `data/results_vi_dis/` | `data/vi_tt/` | ~100/dialogue | Turn-taking generation |
+| 4 | `data/results_vi/` | `data/vi_tt/` | ~100/dialogue | Turn-taking generation |
 | 4b | `data/vi_tt/` | `data/vi_tt_bc/` | ~10/dialogue | Backchannel text |
-| 5 | `data/vi_tt_bc/` | `outputs/audios/` | 0 | TTS audio rendering |
+| 5 | `data/vi_tt_bc/` | `data/vi_audio/` | 0 | TTS audio rendering |
 
-> **Critical:** Stage 4 reads from `data/results_vi_dis/` (not `data/results_vi/`). Feeding the wrong directory → silent failure.
+> **Critical:** Stage 4 reads from `paths.results_root` (`data/results_vi/`). Feeding the wrong directory → silent failure.
 
 ---
 
@@ -269,27 +247,7 @@ One JSON file per dialogue:
 }
 ```
 
-### 3.2 Stage 1.5/1.75 Output (same layout, enhanced)
-
-Same schema as Stage 1. Cross-turn slots and disfluency markers are injected into `segments`:
-
-```json
-{
-  "segments": [
-    {"full_content": "Em tên là Minh..."},
-    {
-      "word_index": 5,
-      "type": "fp",
-      "original": "Minh",
-      "corrupted": "Min-",
-      "repaired": "Minh"
-    },
-    {"full_content": "sinh viên năm cuối..."}
-  ]
-}
-```
-
-### 3.3 Stage 4 Output (`data/vi_tt/text_dialogue_<dataset>/{split}/*.json`)
+### 3.2 Stage 4 Output (`data/vi_tt/text_dialogue_<dataset>/{split}/*.json`)
 
 Turn-taking dialogue with per-word boundary decisions:
 
@@ -340,7 +298,7 @@ Turn-taking dialogue with per-word boundary decisions:
 
 `segments` interleaves plain-text spans with per-word turn-taking decision slots. `probs` = LLM-predicted probabilities. `decision` = sampled action.
 
-### 3.4 Stage 4b Output (`data/vi_tt_bc/`)
+### 3.3 Stage 4b Output (`data/vi_tt_bc/`)
 
 Same as Stage 4, but `[BACKCHANNEL]` tokens replaced with generated text:
 
@@ -351,7 +309,7 @@ Same as Stage 4, but `[BACKCHANNEL]` tokens replaced with generated text:
 }
 ```
 
-### 3.5 Annotation Schema (for Stage 3 training)
+### 3.4 Annotation Schema (for Stage 3 training)
 
 Human slot-level preference labels. Stored in `annotations/<CODE>/{train,test}.jsonl`:
 
@@ -402,7 +360,7 @@ All roles use `gemini-3.6-flash`. Per-dialogue cost ≈ **101 calls** (1 Stage 1
 
 ### 5.1 Call sites (7 locations)
 
-Only Stages 1, 4, and 4b make API calls; Stages 1.5, 1.75, and 5 are LLM-free (§5.5).
+Only Stages 1, 4, and 4b make API calls; Stage 5 is LLM-free (§5.5).
 
 | # | Stage | Function | File:Line | Model config | Purpose |
 |---|---|---|---|---|---|
@@ -464,13 +422,7 @@ Gemini free-tier ≈ 20 req/day. Vertex AI (`GEMINI_CREDENTIALS`) has higher quo
 
 | Stage | Script | Mechanism |
 |---|---|---|
-| **1.5** Cross-turn slots | `src/cross_turn_slots.py` | Rule-based: regex detect email/phone/numeric/alnum → segment → vocalize → optional corrupt + self-correction from templates |
-| **1.75** Disfluency | `src/disfluency.py` | Rule-based: FP/DM/EDIT/REP from inventories; COR/RST currently fall back to EDIT/FP (placeholders, not yet LLM-based despite docstring) |
 | **5** TTS | `tts_render/convert_spoken.py` | OmniVoice/Chatterbox TTS model; no LLM calls (uses voice-clone pool for inference) |
-
-### 5.6 COR/RST placeholder note (`src/disfluency.py`)
-
-The docstring states COR (correction) and RST (restart) are "LLM-based (Gemini), require prompt templates." The current implementation uses rule-based fallbacks (`cor` → EDIT, `rst` → FP) until templates are provided — i.e. **100% rule-based, 0 API calls** for Stage 1.75 at present.
 
 ---
 
@@ -504,7 +456,7 @@ git clone https://github.com/SocraticLM/SocraTeach.git data/raw/SocraticLM
 All pipeline outputs and source data are gitignored:
 
 - `data/raw/` — upstream source corpora
-- `results/`, `data/results_vi/`, `data/results_vi_xt/`, `data/results_vi_dis/` — Stages 1→1.75
+- `results/`, `data/results_vi/` — Stage 1
 - `outputs/`, `output/` — Stages 4→5
 - `data/results_vi/parsed_source/` — test-parse dumps (under `paths.results_root`)
 - `text_dialogue_*/**/*.json` — generated dialogue JSON

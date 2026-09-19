@@ -84,8 +84,6 @@ def test_stage_entrypoints_are_config_driven():
     """Every stage reads config.yaml and exposes only `--config`, not its own flags."""
     stage_files = [
         "src/speechify_run.py",
-        "src/cross_turn_slots.py",
-        "src/disfluency.py",
         "src/synthesis/run.py",
         "src/synthesis/run_add_bc.py",
         "tts_render/convert_spoken.py",

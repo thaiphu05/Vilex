@@ -26,12 +26,6 @@ fi
 # Stage 1 — Speechify (spoken-style conversion)
 "$PY" -m src.speechify_run
 
-# Stage 1.5 — Cross-turn slot dictation
-"$PY" -m src.cross_turn_slots
-
-# Stage 1.75 — Disfluency injection
-"$PY" -m src.disfluency
-
 # Stage 4 — Synthesis (turn-taking + boundary)
 "$PY" -m src.synthesis.run
 

@@ -20,9 +20,7 @@ run:
   test_parse: false
 
 paths:
-  results_root: data/results_vi          # Stage 1 output
-  results_xt_root: data/results_vi_xt    # Stage 1.5 output
-  results_dis_root: data/results_vi_dis  # Stage 1.75 output
+  results_root: data/results_vi          # Stage 1 output (read by Stage 4)
   synthesis_root: data/vi_tt             # Stage 4 output
   bc_root: data/vi_tt_bc                 # Stage 4b output
   stage5_work_root: data/vi_stage5_work  # Stage 5.1a–5.2b intermediates
@@ -77,36 +75,6 @@ stage1_speechify:
   temperature: 0.7
   concise: false
   max_workers: 4
-
-# ---------------------------------------------------------------- Stage 1.5
-stage1_5_cross_turn:
-  perror: 0.20
-  seed: 42
-  roles: both          # user | assistant | both
-  min_digits: 6
-  min_code_len: 5
-  max_workers: 4
-
-# ---------------------------------------------------------------- Stage 1.75
-stage1_75_disfluency:
-  seed: 42
-  max_workers: 4
-  scales:
-    user: 0.4
-    assistant: 0.25
-  shriberg_b: 0.9453
-  types: [fp, dm, edit, rep]
-  rep_span: [1, 1, 2]
-  inventories:
-    fp:
-      vi: ["ừm", "à", "ờ", "ừ", "hừm", "ơ", "ưm"]
-      en: ["um", "uh", "er", "hmm", "ah"]
-    dm:
-      vi: ["à mà", "thì", "mà"]
-      en: ["like", "you know", "well", "so", "I mean", "actually"]
-    edit:
-      vi: ["ý tôi là", "tức là", "hay là", "không phải", "à mà"]
-      en: ["I mean", "that is", "or rather", "no wait", "wait"]
 
 # ---------------------------------------------------------------- Stage 4
 stage4_synthesis:
@@ -165,7 +133,7 @@ stage4b_backchannel:
 #   stage5            shared: mode/seed/language/tags/backchannels/voice
 #   stage5_1a_prep    5.1a  CPU  text prep   (tts_render/stage5a_prep.py)
 #   stage5_1b_render  5.1b  GPU  OmniVoice   (stage5b_render.py)
-#   stage5_2a_align   5.2a  GPU  VAD + Qwen3 (stage5c_align.py)
+#   stage5_2a_align   5.2a  GPU  VAD + whisperx (stage5c_align.py)
 #   stage5_2b_assemble 5.2b CPU  placement/timing/LUFS (stage5d_assemble.py)
 # The monolithic convert_spoken.py reads the same tree via monolithic_view().
 stage5:
@@ -220,17 +188,16 @@ stage5_1b_render:
 
 # ------------------------------------------------------------ Stage 5.2a align
 stage5_2a_align:
-  device: cuda                 # Qwen3 aligner device (Silero VAD always runs on CPU)
+  device: cuda                 # whisperx aligner device (Silero VAD always runs on CPU)
   language: null               # null -> stage5.language
   vad_threshold: 0.3           # Silero VAD speech probability (CPU, tiny model)
   max_prompt_secs: 10          # reference clip clamp
   aligner:
-    model: Qwen/Qwen3-ForcedAligner-0.6B-hf
-    dtype: auto                # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
+    model: ""                  # "" -> whisperx default wav2vec2 for the language
     granularity: utterance     # utterance (whole turn) | sentence (per generated unit)
     max_secs: 240              # skip the model above this length -> fallback
     fallback: proportional     # drop | proportional
-    batch: false               # batch the aligner forward (implies bc_placement: defer)
+    batch: false               # kept for config compatibility; whisperx aligns per item
     batch_size: 8
 
 # --------------------------------------------------------- Stage 5.2b assemble

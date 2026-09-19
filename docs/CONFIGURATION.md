@@ -14,8 +14,6 @@ exposes only an optional `--config PATH` to point at a different file. If
 
 ```bash
 python -m src.speechify_run                 # Stage 1
-python -m src.cross_turn_slots              # Stage 1.5
-python -m src.disfluency                    # Stage 1.75
 python -m src.synthesis.run                 # Stage 4
 python -m src.synthesis.run_add_bc          # Stage 4b
 python tts_render/convert_spoken.py         # Stage 5
@@ -63,11 +61,9 @@ you only need the env vars to override a machine-specific value at runtime.
 | Section | Controls |
 |---|---|
 | `run` | `seed`, `datasets`, `splits`, `target_language`, `dry_run`, `test_parse` |
-| `paths` | all input/output roots (`results_root`, `results_xt_root`, `results_dis_root`, `synthesis_root`, `bc_root`, `audio_root`, `source` + `parsed_source_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`) |
+| `paths` | all input/output roots (`results_root`, `synthesis_root`, `bc_root`, `stage5_work_root`, `audio_root`, `source` + `parsed_source_root`, `data_root`, `input_path` + `input_paths`, `voice_clone_pool`) |
 | `llm` | shared `model` + per-role overrides (writer / boundary / tt / bc), `base_url` + `bc_base_url` / `boundary_base_url`, `api_key` + `boundary_api_key`, `temperature`, `gemini_min_interval`, `gemini_location` (both bridged to env, see above) |
 | `stage1_speechify` | sample budgets, `max_variants`, `interviewer_subset`, `temperature`, `concise` |
-| `stage1_5_cross_turn` | `perror`, `seed`, `roles`, `min_digits`, `min_code_len` |
-| `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |
 | `stage4_synthesis` | `max_turns`, `max_dialogues`, `max_workers`, temperatures, `guards`, `ft_terminal_punct`, `hesitations`, `judge`, `hf` |
 | `stage4b_backchannel` | `max_tokens`, `temperature`, `max_retries`, `valid_max_words`, fallback pools |
 | `stage5` | shared: `mode`, `num_variants`, `max_dialogues`, `seed`, `language`, `target_sr`/`prompt_sr`, `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens), `voice` (instructs) |

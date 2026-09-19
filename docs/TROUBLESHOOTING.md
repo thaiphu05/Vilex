@@ -10,7 +10,7 @@ Stage 5 is Python 3.11 only. Create `.venv-tts` with `python3.11`.
 
 **`[WARN] No input JSONs` / `Number of human annotations: 0`**
 Your input root points at the released Hugging Face layout, which is not what
-the stages read (`paths.results_dis_root` for Stage 4; `--input_root` for the
+the stages read (`paths.results_root` for Stage 4; `--input_root` for the
 Stage 3 tools). Convert it first with `tools/unpack_corpus.py` — see
 [CORPUS.md](CORPUS.md).
 
@@ -27,7 +27,7 @@ uniform fallback. Check that `--base_url` points at a running server, or that
 quotes the first underlying error.
 
 **`No input dialogues under <path> for split 'train'` from `src.synthesis.run`**
-`paths.results_dis_root` must be the *parent* of `text_dialogue_<dataset>/`, and
+`paths.results_root` must be the *parent* of `text_dialogue_<dataset>/`, and
 Stage 4 reads the `dialogues/` half of the corpus, not `annotations/`. Unpack it
 with `tools/unpack_corpus.py --kind dialogues`, whose default root is
 `data-dialogues/`. Note the released `dialogues/` half is train-only.
