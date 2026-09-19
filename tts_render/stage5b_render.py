@@ -5,13 +5,12 @@ text units + backchannels to raw 24 kHz mono wavs (no VAD, no BC attenuation, no
 timing). Batching is **cross-dialogue**: jobs are chunked purely by
 ``stage5_1b_render.omnivoice.batch_size`` (``1`` = one item per call) and a chunk
 may mix speakers/dialogues because each item carries its own reference voice
-(OmniVoice accepts per-item ``ref_audio``/``ref_text`` lists). Every chunk is
-also written to ``<work_root>/_batch/batch_<NNNN>.jsonl`` for inspection.
+(OmniVoice accepts per-item ``ref_audio``/``ref_text`` lists). Chunks are held in
+memory only; long reference wavs are trimmed into ``_batch/refs/``.
 
 Writes (per variant dir):
     units/<unit_id>.wav, bcs/<bc_unit_id>.wav
     manifest.json updated with: unit_audio, failed_units, pause_samples
-and under ``<work_root>/_batch/``: ``batch_<NNNN>.jsonl`` + ``batches.json``.
 
 Resume is filesystem-based: a job whose output wav already exists is skipped, so
 manifests are only rewritten once at the end of the run.
@@ -23,7 +22,6 @@ Usage:
 """
 
 import argparse
-import json
 import random
 import sys
 from glob import glob
@@ -212,44 +210,6 @@ def chunk_jobs(
     return chunks
 
 
-def write_batch_files(
-    batch_dir: Path,
-    chunks: List[List[Dict[str, Any]]],
-    ref_prep: RefPrep,
-    language: str,
-    batch_size: int,
-) -> None:
-    """Materialize every chunk as _batch/batch_<NNNN>.jsonl + a batches.json index."""
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    index = []
-    for bi, chunk in enumerate(chunks, start=1):
-        name = f"batch_{bi:04d}.jsonl"
-        with open(batch_dir / name, "w", encoding="utf-8") as fh:
-            for j in chunk:
-                fh.write(
-                    json.dumps(
-                        {
-                            "id": j["unit_id"],
-                            "text": j["text"],
-                            "ref_audio": ref_prep.path_from(j["ref_wav"]),
-                            "ref_text": ref_prep.text(j["ref_wav"]),
-                            "language_id": language,
-                            "speed": 1.2,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        index.append({"file": name, "n": len(chunk), "ids": [j["unit_id"] for j in chunk]})
-    with open(batch_dir / "batches.json", "w", encoding="utf-8") as fh:
-        json.dump(
-            {"batch_size": batch_size, "n_batches": len(chunks), "batches": index},
-            fh,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-
 # --------------------------------------------------------------------------- generate
 def _unwrap(out) -> List[torch.Tensor]:
     """Normalize an OmniVoice return into a list of [1, T] tensors."""
@@ -387,7 +347,6 @@ def main(config_path=None, limit: int = 0) -> None:
 
     jobs = build_jobs(items, timing_cfg)
     chunks = chunk_jobs(jobs, batch_size, max_unit_chars)
-    write_batch_files(batch_dir, chunks, ref_prep, language, batch_size)
     print(
         f"Stage 5.1b: {len(items)} variants, {len(jobs)} pending units, "
         f"{len(chunks)} batches (batch_size={batch_size})."
@@ -421,10 +380,7 @@ def main(config_path=None, limit: int = 0) -> None:
                 f"{', '.join(m.failed_units)} ({len(m.failed_units)})"
             )
 
-    print(
-        f"Stage 5.1b done: {rendered} rendered, {failed} failed -> "
-        f"{batch_dir}/batch_*.jsonl. Work root -> {root}"
-    )
+    print(f"Stage 5.1b done: {rendered} rendered, {failed} failed. Work root -> {root}")
 
 
 if __name__ == "__main__":

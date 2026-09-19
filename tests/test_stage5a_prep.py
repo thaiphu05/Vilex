@@ -98,12 +98,14 @@ def test_bc_text_and_rising_rewrite(pool):
     assert texts[1] == "v\u00e2ng?"  # seeded fallback (VI pool) + rising "?"
 
 
-def test_manifest_validates_and_jsonl_is_complete(pool):
+def test_manifest_validates_and_jsonl_is_complete(pool, tmp_path):
     m = prep.build_manifest(_dialogue(), "work_0000", REL, 0, 42, pool, False, "vi")
     sch.validate_manifest(m)
     assert m.voice_picks["user"].wav_size > 0
     assert m.voice_picks["assistant"].wav_mtime_ns > 0
-    rows = prep.manifest_jsonl_rows(m, Path("/nonexistent"))
+    # ref_audio is written as the configured pool dir + basename, not absolute.
+    pool_dir = tmp_path / "voice_clone"
+    rows = prep.manifest_jsonl_rows(m, Path("/nonexistent"), "vi", str(pool_dir))
     # 2 host text units + 2 BC lines; pause units never enter the JSONL
     assert len(rows) == 4
     assert all(
@@ -111,7 +113,7 @@ def test_manifest_validates_and_jsonl_is_complete(pool):
     )
     assert all(r["language_id"] == "vi" and r["speed"] == 1.2 for r in rows)
     for r in rows:
-        assert "voice_clone" in r["ref_audio"]
+        assert Path(r["ref_audio"]).parent == pool_dir
         assert Path(r["ref_audio"]).is_file()
         assert r["ref_text"] in ("ref a", "ref b", "ref c")
 

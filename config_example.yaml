@@ -46,7 +46,6 @@ paths:
     persuader: ""
     socraticlm: ""
   voice_clone_pool: voice_clone          # Stage 5 reference wavs + .txt sidecars
-  logdir: data/logs                      # used by the run_*.sh wrappers only (not by any stage)
 
 # ---------------------------------------------------------------- llm routing
 # Point every role at one served model with just base_url + api_key + model.

@@ -267,11 +267,16 @@ def build_manifest(
     )
 
 
-def manifest_jsonl_rows(m: Manifest, work_root: Path, language: str = "vi") -> List[Dict[str, Any]]:
+def manifest_jsonl_rows(
+    m: Manifest, work_root: Path, language: str = "vi", pool_dir: str = "voice_clone"
+) -> List[Dict[str, Any]]:
     """One JSONL row per text unit + per backchannel, for omnivoice-infer-batch.
 
     id encodes the variant + unit so 5.1b can map the rendered wav back. Pause
     units are excluded (OmniVoice cannot read [PAUSE]; 5.1b synthesizes noise).
+
+    ``ref_audio`` is written the way the pool is configured (``pool_dir`` +
+    basename) rather than as an absolute path, e.g. ``voice_clone/id00963.wav``.
     """
     rows: List[Dict[str, Any]] = []
     rel = Path(m.rel_path)
@@ -285,7 +290,7 @@ def manifest_jsonl_rows(m: Manifest, work_root: Path, language: str = "vi") -> L
         return {
             "id": _jsonl_id(rel, m.variant_idx, unit_key),
             "text": text,
-            "ref_audio": m.voice_picks[role].wav,
+            "ref_audio": str(Path(pool_dir) / Path(m.voice_picks[role].wav).name),
             "ref_text": ref_text_by_role[role],
             "language_id": "vi" if str(language).lower().startswith("vi") else "en",
             "speed": 1.2,
@@ -319,7 +324,8 @@ def main(config_path=None) -> None:
 
     bc_root = Path(paths.get("bc_root", "data/vi_tt_bc"))
     work_root = Path(stage5_work_root(s5, cfg))
-    pool_dir = Path(paths.get("voice_clone_pool", "voice_clone"))
+    pool_dir_str = str(paths.get("voice_clone_pool", "voice_clone"))
+    pool_dir = Path(pool_dir_str)
     seed = int(shared.get("seed") or cfg_get(cfg, "run.seed", 42))
     language = str(shared.get("language") or cfg_get(cfg, "run.target_language", "vi"))
     num_variants = int(shared.get("num_variants", 1))
@@ -365,7 +371,7 @@ def main(config_path=None) -> None:
                 write_manifest(mpath, m)
                 n_variants += 1
 
-                for r in manifest_jsonl_rows(m, work_root, language):
+                for r in manifest_jsonl_rows(m, work_root, language, pool_dir_str):
                     unit_key = r["id"].split("__")[-1]
                     if unit_key in prior_audio and Path(prior_audio[unit_key]).is_file():
                         n_skipped += 1

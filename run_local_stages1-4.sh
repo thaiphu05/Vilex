@@ -9,8 +9,6 @@ PY="${PY:-python}"
 STAGE5_PY="${STAGE5_PY:-}"                 # empty -> skip Stage 5
 MODEL="${MODEL:-}"                         # empty -> use llm.model from config
 DATASETS="${DATASETS:-}"                   # empty -> use run.datasets from config
-LOGDIR="${LOGDIR:-data/logs/run_$(date +%F_%H%M)}"
-mkdir -p "$LOGDIR"
 
 CONFIG="${VILEX_CONFIG:-$REPO/config.yaml}"
 
@@ -38,16 +36,14 @@ if [[ -n "$MODEL" ]]; then
   export VILEX_LLM__BC_MODEL="$MODEL"
 fi
 
-STATUS="$LOGDIR/STATUS.txt"
-: > "$STATUS"
-
+# Every stage logs straight to the terminal (no per-stage log files).
 run() {
   local name="$1" cmd="$2"
-  echo "=== ${name} start $(date -u +%FT%TZ) ===" | tee -a "$STATUS"
-  if eval "$cmd" >>"$LOGDIR/${name}.log" 2>&1; then
-    echo "[${name}] OK" | tee -a "$STATUS"
+  echo "=== ${name} start $(date -u +%FT%TZ) ==="
+  if eval "$cmd"; then
+    echo "[${name}] OK"
   else
-    echo "[${name}] FAIL (see $LOGDIR/${name}.log)" | tee -a "$STATUS"
+    echo "[${name}] FAIL" >&2
     return 1
   fi
 }
@@ -63,6 +59,4 @@ if [[ -n "$STAGE5_PY" ]]; then
   run stage5 "$STAGE5_PY tts_render/convert_spoken.py"
 fi
 
-echo "--- summary ---"
-cat "$STATUS"
 echo "counts: $(find data/vi_tt_bc -type f 2>/dev/null | wc -l | tr -d ' ') files in data/vi_tt_bc"

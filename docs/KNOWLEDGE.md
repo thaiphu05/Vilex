@@ -46,7 +46,7 @@ vilex/                          # đổi từ duplexgen/ (Phase 2)
 ├── vilex/tts/chatterbox/       # vendored MIT, pyproject.toml: name chatterbox-tts
 ├── tools/ unpack_corpus.py, pack_corpus.py, build_voice_clone_pool.py, test_*.py
 ├── run_vi_pipeline.sh:4        # relocatable REPO="$(cd $(dirname $0)&&pwd)", PY=${PY:-python}, default vi+omnivoice
-├── run_local_stages1-4.sh      # batch 5 datasets: Stage1→1.5→1.75→4→add_bc, data/logs/run_*/STATUS.txt
+├── run_local_stages1-4.sh      # batch 5 datasets: Stage1→1.5→1.75→4→add_bc, log thẳng ra terminal
 ├── ExternalAsvFileWhisper.openapi.yaml  # spec Whisper ASR server (port 9670) cho build voice pool
 ├── kaggle/ vilex_kaggle.ipynb (2-phase), vilex_stage5_kaggle.ipynb (GPU T4)
 ├── data/vi-common-voice/       # cache Kaggle clip+TSV nguồn build voice_clone
@@ -302,11 +302,11 @@ python tts_render/convert_spoken.py
 # Full 1 dialogue
 ./run_vi_pipeline.sh  # sửa stage5_1b_render.device nếu có GPU, MAX_* để trống = full 43 dialogues
 
-# Batch 5 datasets (Stage1→1.5→1.75→4→add_bc), log per dataset + STATUS
+# Batch 5 datasets (Stage1→1.5→1.75→4→add_bc), log trực tiếp ra terminal
 MAX_TRAIN=30 MAX_DIALOGUES=30 MAX_WORKERS=16 ./run_local_stages1-4.sh
-#   env (đều optional, trống = lấy từ config.yaml): PY, STAGE5_PY, MODEL, DATASETS, LOGDIR
+#   env (đều optional, trống = lấy từ config.yaml): PY, STAGE5_PY, MODEL, DATASETS
 #   pacing/config: llm.gemini_min_interval (default 1.0) + llm.gemini_location trong config.yaml; env GEMINI_MIN_INTERVAL/GEMINI_LOCATION vẫn thắng nếu set
-#   log: data/logs/run_<date>/{<ds>.log, STATUS.txt} — expect 150 files data/vi_tt_bc khi đủ 5×30
+#   output: mỗi stage in header/OK-FAIL ra terminal; không còn file log — expect 150 files data/vi_tt_bc khi đủ 5×30
 # Stage0 corpus prep (optional; vẫn argparse)
 python -m src.prepare_corpus -d all --save_dir results/annotated_dialogues --max_train 1000 --max_test 50
 # Build voice pool (argparse tool; cần ASR server + ffmpeg + soundfile)

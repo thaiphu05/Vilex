@@ -1,6 +1,5 @@
 """Tests for Stage 5.1b render (cross-dialogue queue; no GPU: a stub model)."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -134,20 +133,6 @@ def test_render_chunks_batches_cross_dialogue_and_writes(tmp_path):
     assert (mpath_a.parent / "units" / "u_0_0.wav").is_file()
     assert (mpath_b.parent / "units" / "u_0_0.wav").is_file()
     assert m_a.unit_audio["u_0_0"].endswith("a/var00/units/u_0_0.wav")
-
-
-def test_batch_files_materialized(tmp_path):
-    picks = _pool(tmp_path)
-    mpath, m = _manifest(tmp_path, picks, "a", [Unit(kind="text", unit_id="u_0_0", text="hi")])
-    ref_prep = render.RefPrep(tmp_path / "_batch", 10.0)
-    chunks = render.chunk_jobs(render.build_jobs([(mpath, m)], {}), 8, 400)
-
-    render.write_batch_files(tmp_path / "_batch", chunks, ref_prep, "vi", 8)
-    assert (tmp_path / "_batch" / "batch_0001.jsonl").is_file()
-    index = json.loads((tmp_path / "_batch" / "batches.json").read_text())
-    assert index["batch_size"] == 8 and index["n_batches"] == 1
-    row = json.loads((tmp_path / "_batch" / "batch_0001.jsonl").read_text().splitlines()[0])
-    assert row["id"] == "u_0_0" and row["language_id"] == "vi" and row["ref_text"] == "ref user"
 
 
 def test_batch_failure_falls_back_to_per_item(tmp_path):

@@ -122,8 +122,7 @@ GPU box:
   reference voice (OmniVoice takes per-item `ref_audio`/`ref_text` lists).
   **Needs a voice pool** (always present on the split path). Units longer than
   `max_unit_chars` are generated one per call so a long sentence cannot inflate a
-  shared chunk. Each chunk is also written to `_batch/batch_<NNNN>.jsonl`
-  (`batches.json` indexes them). A chunk failure falls back to per-item calls; an
+  shared chunk (chunks are held in memory only). A chunk failure falls back to per-item calls; an
   item that still fails after `max_retries` becomes 0.2 s silence
   (`fallback_action`), is recorded in `failed_units`, and is dropped from
   alignment. Manifests are rewritten once at the end of the run, and resume is
