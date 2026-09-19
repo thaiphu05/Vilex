@@ -44,9 +44,9 @@ Stage 5 reads Stage 4b's output under `paths.bc_root`, laid out as
 `text_dialogue_<dataset>/<split>/*.json`. Set `paths.bc_root` to that Stage 4b
 output directory.
 
-**`stage5_tts.num_variants=N needs that many distinct user voices`**
+**`stage5.num_variants=N needs that many distinct user voices`**
 The bundled `tts_render/librispeech_samples/` holds 12 speakers, and each
-variant of a dialogue takes a different one. Lower `stage5_tts.num_variants`
+variant of a dialogue takes a different one. Lower `stage5.num_variants`
 (or, for the legacy Chatterbox path, point the code's `librispeech_root` at a
 full LibriSpeech download).
 

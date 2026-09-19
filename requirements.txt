@@ -19,7 +19,7 @@ pyyaml>=6.0
 # Stage 3 turn-taking predictor training/inference (src/train_turntaking_hf.py,
 # src/inference_turntaking_hf.py).
 torch>=2.6,<3
-transformers>=4.53,<5
+transformers>=4.53,<5ff
 peft>=0.10
 # accelerate backs transformers' Trainer and the device_map="auto" placement in
 # src/inference_turntaking_hf.py; bitsandbytes backs --load_in_4bit, which the

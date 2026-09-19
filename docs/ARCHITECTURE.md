@@ -124,7 +124,7 @@ Chi tiết sâu: `docs/stage4-generation.md`.
 
 ## 9. Stage 5 — TTS rendering (`tts_render/convert_spoken.py`)
 
-Purpose: render each dialogue JSON into `stage5_tts.num_variants` two-channel audio variants (ch0 assistant, ch1 user, 24 kHz 16-bit stereo).
+Purpose: render each dialogue JSON into `stage5.num_variants` two-channel audio variants (ch0 assistant, ch1 user, 24 kHz 16-bit stereo).
 Mục đích: render JSON thành audio 2 kênh.
 
 Two backends. Hai backend:
@@ -139,17 +139,17 @@ Steps (`main_process`):
 3. Synthesize sentence by sentence (`generate_audio`), cache backchannels (LRU). Empty audio → 0.2s silence guard.
 4. Silero VAD trims leading/trailing silence per sentence for tight joins.
 5. Timing layer 1 (`aggregate_speech`): same speaker joins directly; turn change → `0.16s` white-noise gap (`-44dBFS`); interrupt → cross-fade overlap `0.45s`–`0.64s`.
-6. Timing layer 2 (backchannels only): the **Qwen3 forced aligner** (`stage5_tts.aligner`, `Qwen/Qwen3-ForcedAligner-0.6B-hf`) anchors BC to word-end timestamps.
+6. Timing layer 2 (backchannels only): the **Qwen3 forced aligner** (`stage5_2a_align.aligner`, `Qwen/Qwen3-ForcedAligner-0.6B-hf`) anchors BC to word-end timestamps.
 7. Mix stereo, normalize full track to LUFS `-23` (`pyloudnorm`, peak fallback).
-8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`, plus `alignment_user.json`/`alignment_assistant.json` when `stage5_tts.audio.save_align_json` is on. Variant with `dialogue.wav` + `meta.json` (and align files, if enabled) exists → skip (resume).
+8. Write per variant `var00/`: `dialogues/dialogue.wav`, `user.wav`/`assistant.wav`, `utterances/`, `backchannels/`, `meta.json`, plus `alignment_user.json`/`alignment_assistant.json` when `stage5_2b_assemble.audio.save_align_json` is on. Variant with `dialogue.wav` + `meta.json` (and align files, if enabled) exists → skip (resume).
 
-Cost knobs: `stage5_tts.max_dialogues`, `stage5_tts.num_variants` (linear cost).
+Cost knobs: `stage5.max_dialogues`, `stage5.num_variants` (linear cost).
 Chi tiết sâu: `docs/stage5-tts.md`.
 
 ## 10. Vietnamese path (Vilex default)
 
 - Stages 1/4/add_bc: `run.target_language: vi` (default) + `gemini-3.6-flash` (or `-lite` when quota exhausted). Prompts stay English; output forced Vietnamese.
-- Stage 5: `stage5_tts.backend: omnivoice` + `language: vi` (default). No prompt wavs, no NeMo.
+- Stage 5: `stage5_1b_render.backend: omnivoice` + `language: vi` (default). No prompt wavs, no NeMo.
 - Voice pool `paths.voice_clone_pool`: each `<name>.wav` needs matching `<name>.txt` transcript; resampled 24k mono, cached once.
 - Credentials: Vertex AI (`GEMINI_CREDENTIALS` + `GEMINI_LOCATION=global`) recommended; fallback `GEMINI_API_KEY` (free-tier ~20 req/day). `run_vi_pipeline.sh` errors clearly if both missing.
 

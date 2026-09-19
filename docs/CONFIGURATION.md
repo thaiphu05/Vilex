@@ -33,7 +33,7 @@ python -m src.synthesis.run --config /path/to/other.yaml
    ```bash
    VILEX_LLM__TEMPERATURE=0.3 \
    VILEX_RUN__DATASETS='[interviewer, soda]' \
-   VILEX_STAGE5_TTS__TAGS__RENDER=true \
+   VILEX_STAGE5__TAGS__RENDER=true \
      python -m src.synthesis.run
    ```
 2. **`config.yaml`** — chosen by: `--config PATH` → `VILEX_CONFIG` env →
@@ -70,7 +70,11 @@ you only need the env vars to override a machine-specific value at runtime.
 | `stage1_75_disfluency` | `scales`, `shriberg_b`, `types`, `rep_span`, `inventories` (FP/DM/EDIT per language) |
 | `stage4_synthesis` | `max_turns`, `max_dialogues`, `max_workers`, temperatures, `guards`, `ft_terminal_punct`, `hesitations`, `judge`, `hf` |
 | `stage4b_backchannel` | `max_tokens`, `temperature`, `max_retries`, `valid_max_words`, fallback pools |
-| `stage5_tts` | backend/language/device, `target_sr`/`prompt_sr`, `profile`, `bc_placement` (auto/inline/defer), `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, VAD, noise floor, `save_align_json`), `aligner` (`model`/`dtype`/`device`, `granularity`, `max_secs`, `fallback`, `batch`), `omnivoice` (`batch`, `batch_size`, `max_unit_chars`, `max_retries`, `fallback_action`), `voice` (instructs, pool), `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens) |
+| `stage5` | shared: `mode`, `num_variants`, `max_dialogues`, `seed`, `language`, `target_sr`/`prompt_sr`, `tags` (13 supported + `render`), `backchannels` (candidates, rising tokens), `voice` (instructs) |
+| `stage5_1a_prep` | `work_root` (null → `paths.stage5_work_root`) |
+| `stage5_1b_render` | `backend`, `device`, `speed`, `language`, `omnivoice` (`batch_size` — cross-dialogue chunk size, 1 = off, `max_unit_chars`, `max_retries`, `fallback_action`) |
+| `stage5_2a_align` | `device` (aligner GPU; Silero VAD is always CPU), `language`, `vad_threshold`, `max_prompt_secs`, `aligner` (`model`/`dtype`, `granularity`, `max_secs`, `fallback`, `batch`) |
+| `stage5_2b_assemble` | `profile`, `bc_placement`, `cleanup_intermediate`, `timing` (gap/pause/intra-pause/interrupt), `audio` (LUFS, noise floor, attenuation, `save_align_json`) |
 
 ### Offline Stage 1 source (`paths.source` / `paths.parsed_source_root`)
 
@@ -93,6 +97,27 @@ Priority: **`input_paths[dataset]` > `input_path` (global fallback) > `data_root
 
 Each stage loops over `run.datasets` × `run.splits` internally, so a single
 invocation processes every dataset/split declared there.
+
+### Stage 5 sub-stage blocks
+
+Stage 5 keeps its shared parameters in `stage5:` and one block per sub-stage:
+`stage5_1a_prep`, `stage5_1b_render`, `stage5_2a_align`, `stage5_2b_assemble`
+(see the table above). The split entry points
+(`tts_render/stage5a_prep.py` → `stage5b_render.py` → `stage5c_align.py` →
+`stage5d_assemble.py`, glue `./run_vi_stage5_split.sh`) and the monolithic
+`convert_spoken.py` all read them via `tts_render/stage5_config.resolve_stage5`.
+The prep stage freezes every text decision under
+`stage5_1a_prep.work_root` (default `paths.stage5_work_root`) as
+`manifest.json` + a global `_batch/omnivoice_units.jsonl`; 5.1b fills
+`unit_audio`/`failed_units`/`pause_samples`, 5.2a writes `alignment.json`, and
+5.2b writes the final variant tree under `paths.audio_root` (monolithic schema).
+
+Env overrides follow the block names, e.g.
+`VILEX_STAGE5_1B_RENDER__DEVICE`, `VILEX_STAGE5_2A_ALIGN__ALIGNER__GRANULARITY`,
+`VILEX_STAGE5_2B_ASSEMBLE__AUDIO__SAVE_ALIGN_JSON`. The legacy
+`VILEX_STAGE5_TTS__*` names and a flat `stage5_tts:` YAML block are still
+accepted for one migration cycle (deprecation notice) but new configs should use
+the blocks above.
 
 ## Notes
 

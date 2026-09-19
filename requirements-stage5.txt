@@ -35,6 +35,7 @@ nltk>=3.8
 silero-vad>=6.2.1
 numpy<2
 pyyaml>=6.0
+soundfile>=0.12
 
 # Forced alignment for backchannel anchoring + alignment JSON. Qwen3-ForcedAligner
 # runs on transformers' native Qwen3-ASR implementation, so a recent transformers

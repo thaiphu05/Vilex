@@ -74,7 +74,7 @@ llm:
 
 Stage 4 has three independent LLM roles: `llm.writer_model` (writer), `llm.boundary_model` (slot detection), `llm.tt_model` (turn-taking predictor); each falls back to `llm.model`. Or set `stage4_synthesis.hf_model_name_or_path` for the Stage 3 LoRA predictor.
 
-Defaults are now Vietnamese: `run.target_language: vi`, `stage5_tts.backend: omnivoice`, `stage5_tts.language: vi`. For English set `VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_TTS__BACKEND=chatterbox VILEX_STAGE5_TTS__LANGUAGE=en`.
+Defaults are now Vietnamese: `run.target_language: vi`, `stage5_1b_render.backend: omnivoice`, `stage5.language: vi`. For English set `VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_1B_RENDER__BACKEND=chatterbox VILEX_STAGE5__LANGUAGE=en`.
 
 ## Quickstart (Vietnamese, default)
 
@@ -124,7 +124,7 @@ Full pipeline in one command: `./run_vi_pipeline.sh` (see file header for option
 ## English legacy (Chatterbox)
 
 Edit `config.yaml` (or override via `VILEX_*`) to switch models/language, e.g.
-`VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_TTS__BACKEND=chatterbox`:
+`VILEX_RUN__TARGET_LANGUAGE=en VILEX_STAGE5_1B_RENDER__BACKEND=chatterbox`:
 
 ```bash
 .venv/bin/python -m src.speechify_run
