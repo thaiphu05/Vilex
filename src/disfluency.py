@@ -27,6 +27,8 @@ from typing import List, Tuple, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
+from tqdm import tqdm  # noqa: E402
+
 from src.config import cfg_get, load_config  # noqa: E402
 
 # The Stage 1 LLM emits "..." for hesitation; the TTS cannot read it, so we
@@ -481,8 +483,11 @@ def main(config_path=None):
     seed = cfg_get(cfg, "stage1_75_disfluency.seed", cfg_get(cfg, "run.seed", 42))
     datasets = cfg_get(cfg, "run.datasets", ["interviewer"])
     splits = cfg_get(cfg, "run.splits", ["train"])
+    max_workers = int(cfg_get(cfg, "stage1_75_disfluency.max_workers", 1))
 
-    rng = random.Random(seed)
+    import threading
+
+    lock = threading.Lock()
     total_injections = 0
     total_modified = 0
     total_files = 0
@@ -498,18 +503,21 @@ def main(config_path=None):
             files = sorted(input_dir.glob("*.json"))
             logger.info("Found %d files in %s", len(files), input_dir)
 
-            for f in files:
+            def _process_one(f: Path, input_dir=input_dir, output_dir=output_dir):
                 rel = f.relative_to(input_dir)
                 dst = output_dir / rel
                 if dst.exists() and not dry_run:
                     logger.info("Skip (exists): %s", dst)
-                    continue
-
-                stats = process_file(f, dst, rng, target_language, dry_run, scales=scales)
-                total_injections += stats["injections"]
-                total_files += 1
-                if stats["modified"]:
-                    total_modified += 1
+                    return None
+                # Per-file RNG keeps output reproducible regardless of worker count.
+                file_rng = random.Random(f"{seed}:{f.name}")
+                stats = process_file(f, dst, file_rng, target_language, dry_run, scales=scales)
+                with lock:
+                    nonlocal total_injections, total_modified, total_files
+                    total_injections += stats["injections"]
+                    total_files += 1
+                    if stats["modified"]:
+                        total_modified += 1
                 if dry_run:
                     logger.info(
                         "[dry-run] %s: %d injections, %d pauses, modified=%s",
@@ -518,6 +526,22 @@ def main(config_path=None):
                         stats.get("pauses", 0),
                         stats["modified"],
                     )
+                return stats
+
+            if max_workers > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = [pool.submit(_process_one, f) for f in files]
+                    for _ in tqdm(
+                        as_completed(futures),
+                        total=len(futures),
+                        desc=f"Disfluency [{dataset}/{split}] x{max_workers}",
+                    ):
+                        pass
+            else:
+                for f in tqdm(files, desc=f"Disfluency [{dataset}/{split}]"):
+                    _process_one(f)
 
     logger.info(
         "Done. Modified %d/%d files, %d total injections.",

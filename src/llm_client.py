@@ -60,11 +60,18 @@ def is_gemini_client(client: OpenAI) -> bool:
     return "generativelanguage" in str(getattr(client, "base_url", "") or "")
 
 
+def is_anthropic_model(model_name: str) -> bool:
+    """True when `model_name` should be served by an Anthropic endpoint."""
+    lowered = model_name.lower()
+    return "claude" in lowered or "anthropic" in lowered
+
+
 def make_client(
     model_name: str,
     api_key: str = "EMPTY",
     base_url: Optional[str] = "http://localhost:8000/v1",
     credentials: Optional[str] = None,
+    anthropic_mode: Optional[bool] = None,
 ) -> OpenAI:
     """Build the client for `model_name`.
 
@@ -76,9 +83,21 @@ def make_client(
       ``GEMINI_CREDENTIALS`` / ``GOOGLE_APPLICATION_CREDENTIALS``) is used via
       **Vertex AI** (project + location from the SA / ``GEMINI_LOCATION``), or an
       API key (``--api_key`` / ``GEMINI_API_KEY``) hits the Generative Language API.
+    - Anthropic models (``claude*`` / ``*anthropic*``, or ``anthropic_mode=True``)
+      are served by ``AnthropicClient`` against ``base_url``; the key comes from
+      ``ANTHROPIC_API_KEY`` (falling back to ``api_key``).
     - Everything else posts to ``base_url`` with ``api_key`` (e.g. a self-hosted
       vLLM server).
     """
+    if anthropic_mode or is_anthropic_model(model_name):
+        from src.anthropic_client import AnthropicClient
+
+        key = os.getenv("ANTHROPIC_API_KEY") or (
+            api_key if api_key not in ("EMPTY", None) else None
+        )
+        return AnthropicClient(
+            model_name, api_key=key, base_url=base_url or "http://localhost:8000"
+        )
     if is_openai_model(model_name):
         key = os.getenv("OPENAI_API_KEY")
         if not key:
@@ -116,8 +135,11 @@ def no_thinking_extra_body(client: OpenAI) -> Optional[dict]:
       GeminiClient wrapper reads the `google_thinking_budget` marker and maps it
       to `types.ThinkingConfig(thinking_budget=...)` before calling the native
       SDK. We therefore return the marker for Gemini clients.
+    * Anthropic: no thinking-budget concept via this shim; return None.
     * OpenAI: native reasoning controls differ; return None for now.
     """
+    if getattr(client, "_is_anthropic", False):
+        return None
     if getattr(client, "_is_gemini", False):
         return {"google_thinking_budget": 0}
     base = str(getattr(client, "base_url", "") or "")

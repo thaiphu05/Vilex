@@ -318,14 +318,15 @@ def process_dataset(dataset_name: str, args, client: Optional[OpenAI]):
         save_dir.mkdir(parents=True, exist_ok=True)
 
         verb = "Parsing" if args.test_parse else "Converting"
-        for ex_id, turns, context in tqdm(samples, desc=f"{verb} {dataset_name} ({split_label})"):
+
+        def _process_one(item):
+            ex_id, turns, context = item
             filename = f"{ex_id}_{split_label}.json" if dataset_name == "soda" else f"{ex_id}.json"
             out_path = save_dir / filename
             if out_path.exists() and (args.test_parse or is_converted(out_path)):
-                continue
-
+                return "skip"
             if not turns:
-                continue
+                return "skip"
 
             if args.test_parse:
                 write_json(
@@ -338,7 +339,7 @@ def process_dataset(dataset_name: str, args, client: Optional[OpenAI]):
                         "meta": {"split": split_label},
                     },
                 )
-                continue
+                return "ok"
 
             utterances = speechify_full_dialogue(
                 llm_model_name=args.llm_model_name,
@@ -364,6 +365,22 @@ def process_dataset(dataset_name: str, args, client: Optional[OpenAI]):
                 },
             }
             write_json(out_path, result)
+            return "ok"
+
+        if args.max_workers and args.max_workers > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=args.max_workers) as pool:
+                futures = [pool.submit(_process_one, item) for item in samples]
+                for _ in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"{verb} {dataset_name} ({split_label}) x{args.max_workers}",
+                ):
+                    pass
+        else:
+            for item in tqdm(samples, desc=f"{verb} {dataset_name} ({split_label})"):
+                _process_one(item)
 
 
 def _build_args(cfg, split_label):
@@ -392,6 +409,8 @@ def _build_args(cfg, split_label):
         base_url=llm.get("base_url", "http://localhost:8000/v1"),
         concise=bool(s1.get("concise", False)),
         test_parse=bool(cfg_get(cfg, "run.test_parse", False)),
+        anthropic_mode=bool(llm.get("anthropic_mode", False)),
+        max_workers=int(s1.get("max_workers", 1)),
     )
 
 
@@ -407,7 +426,12 @@ def main(config_path=None):
 
     client = None
     if not args.test_parse:
-        client = make_client(args.llm_model_name, args.api_key, args.base_url)
+        client = make_client(
+            args.llm_model_name,
+            args.api_key,
+            args.base_url,
+            anthropic_mode=args.anthropic_mode,
+        )
 
     for ds_name in datasets_to_run:
         process_dataset(ds_name, args, client)

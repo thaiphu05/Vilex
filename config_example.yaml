@@ -61,6 +61,7 @@ llm:
   base_url: http://localhost:8000/v1     # self-hosted (Qwen/...); e.g. http://host/v1
   bc_base_url: ""                        # "" -> inherit base_url
   api_key: EMPTY                         # sent as Authorization: Bearer
+  anthropic_mode: false                  # true -> AnthropicClient (key from ANTHROPIC_API_KEY)
   boundary_api_key: ""                   # "" -> inherit api_key
   boundary_base_url: ""                  # "" -> inherit base_url
   temperature: 0.7
@@ -75,6 +76,7 @@ stage1_speechify:
   interviewer_subset: workforce
   temperature: 0.7
   concise: false
+  max_workers: 4
 
 # ---------------------------------------------------------------- Stage 1.5
 stage1_5_cross_turn:
@@ -83,10 +85,12 @@ stage1_5_cross_turn:
   roles: both          # user | assistant | both
   min_digits: 6
   min_code_len: 5
+  max_workers: 4
 
 # ---------------------------------------------------------------- Stage 1.75
 stage1_75_disfluency:
   seed: 42
+  max_workers: 4
   scales:
     user: 0.4
     assistant: 0.25
@@ -146,6 +150,7 @@ stage4_synthesis:
 # ---------------------------------------------------------------- Stage 4b
 stage4b_backchannel:
   prompt_kind: qwen        # qwen | legacy
+  max_workers: 4
   max_tokens: 32
   temperature: 0.7
   max_retries: 2

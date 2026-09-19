@@ -17,6 +17,8 @@ BASE_URL = "http://localhost:8008/v1"
 API_KEY = "EMPTY"
 PROMPT_KIND = "qwen"  # "qwen" (new, engineered) | "legacy" (original gpt prompt)
 TARGET_LANGUAGE = "vi"  # "en" | "vi" (default vi for Vilex)
+ANTHROPIC_MODE = False  # route through AnthropicClient (config llm.anthropic_mode)
+MAX_WORKERS = 1  # parallel dialogues (config stage4b_backchannel.max_workers)
 
 # Set from paths.synthesis_root / paths.bc_root in main(): the old hardcoded
 # defaults named a directory no stage writes, so a bare run globbed nothing and
@@ -242,6 +244,7 @@ def configure(cfg):
     global INPUT_ROOT, OUTPUT_ROOT, client
     global FALLBACK_BC_VI, FALLBACK_BC_EN
     global BC_MAX_TOKENS, BC_TEMPERATURE, BC_MAX_RETRIES, VALID_MAX_WORDS, MAX_FILE_ATTEMPTS
+    global ANTHROPIC_MODE, MAX_WORKERS
 
     llm = cfg_get(cfg, "llm", {})
     s4b = cfg_get(cfg, "stage4b_backchannel", {})
@@ -252,6 +255,8 @@ def configure(cfg):
     API_KEY = llm.get("api_key", API_KEY)
     PROMPT_KIND = s4b.get("prompt_kind", PROMPT_KIND)
     TARGET_LANGUAGE = cfg_get(cfg, "run.target_language", TARGET_LANGUAGE)
+    ANTHROPIC_MODE = bool(llm.get("anthropic_mode", False))
+    MAX_WORKERS = int(s4b.get("max_workers", 1))
 
     BC_MAX_TOKENS = s4b.get("max_tokens", BC_MAX_TOKENS)
     BC_TEMPERATURE = s4b.get("temperature", BC_TEMPERATURE)
@@ -267,7 +272,7 @@ def configure(cfg):
 
     INPUT_ROOT = Path(paths.get("synthesis_root", "data/vi_tt"))
     OUTPUT_ROOT = Path(paths.get("bc_root", "data/vi_tt_bc"))
-    client = make_client(MODEL_NAME, API_KEY, BASE_URL)
+    client = make_client(MODEL_NAME, API_KEY, BASE_URL, anthropic_mode=ANTHROPIC_MODE)
 
 
 def main(config_path=None):
@@ -285,11 +290,12 @@ def main(config_path=None):
             if not files:
                 continue
             total += len(files)
-            for in_path in tqdm(files, desc=f"Adding backchannels [{dataset}/{split}]"):
+
+            def _process_one(in_path: Path, dataset=dataset, split=split):
                 rel_path = in_path.relative_to(INPUT_ROOT)
                 out_path = OUTPUT_ROOT / rel_path
                 if out_path.exists():
-                    continue
+                    return "skip"
 
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -300,7 +306,7 @@ def main(config_path=None):
                         dialogue = json.load(f)
                 except (json.JSONDecodeError, OSError) as exc:
                     print(f"\n[run_add_bc] SKIP unreadable input {in_path.name}: {exc}")
-                    continue
+                    return "skip"
 
                 # A single malformed/empty LLM reply must not abort the whole
                 # stage. Retry a few times, then skip the dialogue as lost.
@@ -319,10 +325,27 @@ def main(config_path=None):
                         f"[run_add_bc] SKIP {in_path.name} after {MAX_FILE_ATTEMPTS} "
                         f"failed attempts (no bc added)"
                     )
-                    continue
+                    return "skip"
 
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump(processed, f, indent=2, ensure_ascii=False)
+                return "ok"
+
+            desc = f"Adding backchannels [{dataset}/{split}]"
+            if MAX_WORKERS > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+                    futures = [pool.submit(_process_one, p) for p in files]
+                    for _ in tqdm(
+                        as_completed(futures),
+                        total=len(futures),
+                        desc=f"{desc} x{MAX_WORKERS}",
+                    ):
+                        pass
+            else:
+                for in_path in tqdm(files, desc=desc):
+                    _process_one(in_path)
 
     if total == 0:
         raise SystemExit(

@@ -130,6 +130,7 @@ def _build_args(cfg):
         temperature_ai=s4.get("temperature_ai", 0.2),
         target_language=cfg_get(cfg, "run.target_language", "vi"),
         max_workers=s4.get("max_workers", 1),
+        anthropic_mode=bool(llm.get("anthropic_mode", False)),
     )
 
 
@@ -161,14 +162,24 @@ def main(config_path=None):
 
     # 1. Initialize Clients
     # Main generation client
-    client = make_client(args.llm_model_name, args.api_key, args.base_url)
+    client = make_client(
+        args.llm_model_name,
+        args.api_key,
+        args.base_url,
+        anthropic_mode=args.anthropic_mode,
+    )
 
     # Boundary detection client. api_key/base_url already fall back to the shared
     # llm.api_key / llm.base_url in _build_args; make_client picks the backend
     # from the model name, so no OPENAI_API_KEY special-casing belongs here.
     b_key = args.boundary_api_key
     b_url = args.boundary_base_url
-    client_boundary = make_client(args.boundary_model_name, b_key, b_url)
+    client_boundary = make_client(
+        args.boundary_model_name,
+        b_key,
+        b_url,
+        anthropic_mode=args.anthropic_mode,
+    )
 
     # Turn-taking scoring: HF classification model OR LLM-based client
     hf_model = None
@@ -182,7 +193,12 @@ def main(config_path=None):
         )
         client_tt = None  # not needed when using HF model
     else:
-        client_tt = make_client(args.tt_model_name, args.tt_api_key, args.tt_base_url)
+        client_tt = make_client(
+            args.tt_model_name,
+            args.tt_api_key,
+            args.tt_base_url,
+            anthropic_mode=args.anthropic_mode,
+        )
 
     datasets = cfg_get(cfg, "run.datasets", [])
     splits = cfg_get(cfg, "run.splits", ["train"])
