@@ -57,8 +57,8 @@ def test_new_blocks_resolve_and_defaults_fill():
     assert s5["stage5_1b_render"]["omnivoice"]["batch_size"] == 4
     assert s5["stage5_2a_align"]["aligner"]["granularity"] == "sentence"
     assert s5["stage5_2b_assemble"]["profile"] is True
-    # defaults still present for untouched keys
-    assert s5["stage5_2a_align"]["aligner"]["model"].startswith("Qwen/Qwen3-ForcedAligner")
+    # defaults still present for untouched keys (empty model -> whisperx default)
+    assert s5["stage5_2a_align"]["aligner"]["model"] == ""
     assert "supported" in s5["stage5"]["tags"]
     # single device per sub-stage: the aligner has no separate device key.
     assert s5["stage5_2a_align"]["device"] == "cuda"

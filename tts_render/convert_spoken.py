@@ -32,6 +32,7 @@ import tempfile
 import zlib
 from pathlib import Path
 from silero_vad import load_silero_vad, get_speech_timestamps
+import whisperx
 from glob import glob
 import copy
 
@@ -56,18 +57,17 @@ RENDER_TAGS = False
 # When True (stage5_2b_assemble.audio.save_align_json) write per-variant word-level
 # forced-alignment JSON (alignment_user.json / alignment_assistant.json).
 SAVE_ALIGN_JSON = False
-# Forced aligner (stage5_2a_align.aligner.*): Qwen3-ForcedAligner gives word-level
+# Forced aligner (stage5_2a_align.aligner.*): whisperx gives word-level
 # timestamps for a known transcript, used to anchor backchannels to word-ends
-# and to build the alignment JSON. dtype "auto" -> bfloat16 on GPUs that support
-# it, else float16.
-ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
-ALIGNER_DTYPE = "auto"
+# and to build the alignment JSON. The model is picked by language (wav2vec2);
+# ``ALIGNER_MODEL`` optionally overrides the checkpoint, empty = whisperx default.
+ALIGNER_MODEL = ""
 ALIGNER_DEVICE = "cuda"
 # Aligner behaviour (stage5_2a_align.aligner.*).
 ALIGN_GRANULARITY = "utterance"  # utterance | sentence  (sentence = align each generated unit)
 ALIGN_MAX_SECS = 240.0  # skip the model above this audio length -> fallback
 ALIGN_FALLBACK = "proportional"  # drop | proportional
-ALIGN_BATCH = False  # batch the aligner forward across a dialogue's hosts (needs defer)
+ALIGN_BATCH = False  # kept for config compatibility; whisperx aligns per item
 ALIGN_BATCH_SIZE = 8
 # Stage 5 extras (stage5_1b_render/stage5_2a_align/stage5_2b_assemble.*).
 PROFILE = False  # log per-dialogue generate/vad/align timings
@@ -1005,108 +1005,83 @@ def _save_cumulative_prompt(audio: torch.Tensor, path: str):
     torchaudio.save(path, trimmed, TARGET_SR)
 
 
-def _resolve_aligner_dtype(dtype_name, device):
-    """Map stage5_2a_align.aligner.dtype to a torch dtype.
-
-    ``auto`` picks bfloat16 when the GPU supports it (Ampere+) and float16
-    otherwise (e.g. T4/Turing), so the aligner never crashes on a bf16-less box.
-    """
-    if dtype_name in ("auto", "", None):
-        if device == "cuda" and torch.cuda.is_available():
-            try:
-                major, _ = torch.cuda.get_device_capability()
-                return torch.bfloat16 if major >= 8 else torch.float16
-            except Exception:  # pragma: no cover - defensive
-                return torch.float16
-        return torch.float32
-    return {
-        "bfloat16": torch.bfloat16,
-        "bf16": torch.bfloat16,
-        "float16": torch.float16,
-        "fp16": torch.float16,
-        "float32": torch.float32,
-        "fp32": torch.float32,
-    }.get(str(dtype_name).lower(), torch.float32)
+def _align_language():
+    """whisperx align-model language code derived from the TTS language."""
+    return "vi" if str(TTS_LANGUAGE).lower().startswith("vi") else "en"
 
 
 def _load_forced_aligner(model_id=None, dtype_name=None, device=None):
-    """Load the Qwen3-ForcedAligner (processor + model) for word timestamps.
+    """Load a whisperx alignment model (wav2vec2) for word timestamps.
 
     Defaults are resolved from the module globals at call time (not def time) so
     the config values applied by ``_apply_tts_config`` actually take effect.
-    Imported lazily so the Chatterbox-only environment does not need transformers
-    at module import time.
+    ``model_id`` optionally overrides the language-default checkpoint; the
+    ``dtype_name`` argument is accepted for backwards compatibility and ignored
+    (whisperx picks the dtype itself).
     """
-    from transformers import AutoModelForTokenClassification, AutoProcessor
-
     model_id = model_id or ALIGNER_MODEL
-    dtype_name = dtype_name or ALIGNER_DTYPE
     device = device or ALIGNER_DEVICE
-    torch_dtype = _resolve_aligner_dtype(dtype_name, device)
-    processor = AutoProcessor.from_pretrained(model_id)
-    model = AutoModelForTokenClassification.from_pretrained(model_id, dtype=torch_dtype)
-    model = model.to(device)
-    model.eval()
-    logging.info("Loaded forced aligner %s (dtype=%s device=%s)", model_id, torch_dtype, device)
-    return {"processor": processor, "model": model}
-
-
-def _timestamps_to_words(stamps):
-    """Normalise aligner output dicts into ``{word, start, end}`` records."""
-    words = []
-    for item in stamps or []:
-        if "start_time" not in item or "end_time" not in item:
-            continue
-        words.append(
-            {
-                "word": item.get("text", ""),
-                "start": float(item["start_time"]),
-                "end": float(item["end_time"]),
-            }
-        )
-    return words
+    language = _align_language()
+    model_a, metadata = whisperx.load_align_model(
+        language_code=language, model_name=model_id or None, device=device
+    )
+    logging.info(
+        "Loaded whisperx aligner lang=%s (model=%s device=%s)",
+        language,
+        model_id or "default",
+        device,
+    )
+    return {"model_a": model_a, "metadata": metadata, "device": device, "language": language}
 
 
 def _align_words_once(align, audio, text):
-    """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels) with Qwen3.
+    """Forced-align ``text`` to ``audio`` (TARGET_SR, any channels) with whisperx.
 
     Returns a list of ``{word, start, end}`` with times relative to the start of
-    ``audio``; ``[]`` when alignment fails, exceeds ``ALIGN_MAX_SECS`` (the
-    model's ~300 s ceiling) or yields no words.
+    ``audio``; ``[]`` when alignment fails, exceeds ``ALIGN_MAX_SECS`` or yields
+    no words.
     """
     text = (text or "").strip()
     if not text or audio.numel() == 0:
         return []
-    if ALIGN_MAX_SECS and audio.size(1) / TARGET_SR > ALIGN_MAX_SECS:
+    duration_sec = audio.size(1) / TARGET_SR
+    if ALIGN_MAX_SECS and duration_sec > ALIGN_MAX_SECS:
         logging.warning(
             "Alignment skipped: %.1fs exceeds aligner max_secs=%.0f; using fallback.",
-            audio.size(1) / TARGET_SR,
+            duration_sec,
             ALIGN_MAX_SECS,
         )
         return []
-    # Mono float32 at 16 kHz (the feature extractor's rate), regardless of how
-    # many channels the TTS output stacked.
+    # Mono at 16 kHz (whisperx's expected rate), regardless of how many channels
+    # the TTS output stacked.
     mono = audio.mean(dim=0, keepdim=True)
     audio_16k = _resample(mono, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
-    wav = audio_16k.squeeze(0).numpy().astype(np.float32)
+    segments = [{"text": " " + text, "start": 0.0, "end": duration_sec}]
     try:
-        inputs, word_lists = align["processor"].prepare_forced_aligner_inputs(
-            audio=wav, transcript=text, language=None
+        result = whisperx.align(
+            segments,
+            align["model_a"],
+            align["metadata"],
+            audio_16k,
+            align.get("device", ALIGNER_DEVICE),
+            return_char_alignments=False,
         )
-        model = align["model"]
-        inputs = inputs.to(model.device, model.dtype)
-        with torch.inference_mode():
-            outputs = model(**inputs)
-        stamps = align["processor"].decode_forced_alignment(
-            logits=outputs.logits,
-            input_ids=inputs["input_ids"],
-            word_lists=word_lists,
-            timestamp_token_id=model.config.timestamp_token_id,
-        )[0]
     except Exception as exc:  # pragma: no cover - defensive
         logging.warning("Alignment failed for %r: %s", text[:40], exc)
         return []
-    return _timestamps_to_words(stamps)
+    words = []
+    for segment in result.get("segments", []):
+        for word in segment.get("words", []):
+            if "start" not in word or "end" not in word:
+                continue
+            words.append(
+                {
+                    "word": word.get("word", word.get("text", "")),
+                    "start": float(word["start"]),
+                    "end": float(word["end"]),
+                }
+            )
+    return words
 
 
 def _audio_to_tensor(item):
@@ -1163,57 +1138,14 @@ def _words_with_fallback(words, text, duration_sec):
     return []
 
 
-def _align_words_batch(align, items):
-    """Batched aligner forward over ``[(audio, text), ...]`` -> list of word lists."""
-    processor = align["processor"]
-    model = align["model"]
-    wavs = []
-    texts = []
-    for audio, text in items:
-        mono = audio.mean(dim=0, keepdim=True)
-        wavs.append(
-            _resample(mono, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
-            .squeeze(0)
-            .numpy()
-            .astype(np.float32)
-        )
-        texts.append((text or "").strip())
-    inputs, word_lists = processor.prepare_forced_aligner_inputs(
-        audio=wavs, transcript=texts, language=None
-    )
-    inputs = inputs.to(model.device, model.dtype)
-    with torch.inference_mode():
-        outputs = model(**inputs)
-    stamps = processor.decode_forced_alignment(
-        logits=outputs.logits,
-        input_ids=inputs["input_ids"],
-        word_lists=word_lists,
-        timestamp_token_id=model.config.timestamp_token_id,
-    )
-    return [_timestamps_to_words(s) for s in stamps]
-
-
 def _align_items(align, items):
-    """Align ``[(audio, text), ...]``; batched when ``ALIGN_BATCH``, else per item."""
+    """Align ``[(audio, text), ...]`` per item (whisperx has no cross-clip batch)."""
     results = [[] for _ in items]
     if not items:
         return results
     t0 = time.time()
-    clean = all((t or "").strip() for _, t in items)
-    if not ALIGN_BATCH or len(items) == 1 or not clean:
-        for i, (audio, text) in enumerate(items):
-            results[i] = _align_words_once(align, audio, text)
-        _profile_add("align", time.time() - t0)
-        return results
-    step = max(1, ALIGN_BATCH_SIZE)
-    for start in range(0, len(items), step):
-        chunk = items[start : start + step]
-        try:
-            results[start : start + len(chunk)] = _align_words_batch(align, chunk)
-        except Exception as exc:  # pragma: no cover - defensive
-            logging.warning("Batched alignment failed (%s); retrying per item.", exc)
-            for j, (audio, text) in enumerate(chunk):
-                results[start + j] = _align_words_once(align, audio, text)
+    for i, (audio, text) in enumerate(items):
+        results[i] = _align_words_once(align, audio, text)
     _profile_add("align", time.time() - t0)
     return results
 
@@ -2036,7 +1968,7 @@ def _apply_tts_config(cfg):
     global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
     global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON, VAD_THRESHOLD
-    global ALIGNER_MODEL, ALIGNER_DTYPE, ALIGNER_DEVICE
+    global ALIGNER_MODEL, ALIGNER_DEVICE
     global ALIGN_GRANULARITY, ALIGN_MAX_SECS, ALIGN_FALLBACK, ALIGN_BATCH, ALIGN_BATCH_SIZE
     global PROFILE, BC_PLACEMENT, _BC_PLACEMENT_RESOLVED
     global OMNI_BATCH, OMNI_BATCH_SIZE, OMNI_MAX_UNIT_CHARS, OMNI_MAX_RETRIES
@@ -2082,7 +2014,6 @@ def _apply_tts_config(cfg):
     VAD_THRESHOLD = float(audio.get("vad_threshold", VAD_THRESHOLD))
 
     ALIGNER_MODEL = aligner.get("model") or ALIGNER_MODEL
-    ALIGNER_DTYPE = aligner.get("dtype") or ALIGNER_DTYPE
     ALIGNER_DEVICE = aligner.get("device") or s5.get("device", ALIGNER_DEVICE)
 
     ALIGN_GRANULARITY = aligner.get("granularity") or ALIGN_GRANULARITY
@@ -2314,7 +2245,7 @@ def main(args):
         TARGET_SR = 24000  # OmniVoice operates at 24 kHz
         align = _load_forced_aligner()
         normalizer = None  # OmniVoice normalizes internally; skip NeMo
-        logging.info("Loaded OmniVoice (Vietnamese) backend; Qwen3 forced aligner ready")
+        logging.info("Loaded OmniVoice (Vietnamese) backend; whisperx aligner ready")
     else:
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 

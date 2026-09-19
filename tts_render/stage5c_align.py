@@ -1,8 +1,8 @@
-"""Stage 5.2a — VAD trim + Qwen3 forced alignment (GPU) for the split pipeline.
+"""Stage 5.2a — VAD trim + whisperx forced alignment (GPU) for the split pipeline.
 
 Consumes the raw unit wavs written by 5.1b, rebuilds each host utterance with
 its pause units, applies the same Silero VAD trimming as the monolithic path,
-attenuates backchannels (x0.8) and runs the Qwen3 forced aligner on hosts (and
+attenuates backchannels (x0.8) and runs the whisperx aligner on hosts (and
 multi-word backchannels). Writes a trimmed host wav plus ``alignment.json``.
 
 Writes (per variant dir):
@@ -224,7 +224,7 @@ def main(config_path=None, limit: int = 0) -> None:
 
 
 if __name__ == "__main__":
-    _ap = argparse.ArgumentParser(description="Stage 5.2a: VAD + Qwen3 alignment (GPU).")
+    _ap = argparse.ArgumentParser(description="Stage 5.2a: VAD + whisperx alignment (GPU).")
     _ap.add_argument("--config", default=None, help="Path to config.yaml")
     _ap.add_argument("--limit", type=int, default=0, help="cap variants (0 = all)")
     _args = _ap.parse_args()

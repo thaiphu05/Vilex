@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 MODELING_LAYERS_MIN = (4, 53)  # transformers.modeling_layers first shipped in 4.53
-QWEN_ALIGNER_MIN = (4, 56)  # Qwen3ASRProcessor / Qwen3-ForcedAligner native support
 
 
 def _parse(req_path):
@@ -45,22 +44,18 @@ def test_stage14_transformers_has_an_upper_bound():
     assert "<" in spec, f"transformers needs a major upper bound, got {spec!r}"
 
 
-def test_stage5_requirements_do_not_pin_transformers_exactly():
-    """Stage 5 needs transformers for the Qwen3 forced aligner, but must not
-    hard-pin it: the vendored Chatterbox pyproject owns the exact pin for the
-    English path (``==4.46.3``), which the aligner cannot run on.
+def test_stage5_requirements_ship_whisperx_and_do_not_pin_transformers():
+    """Stage 5 aligns with whisperx (wav2vec2), so it must not pin transformers
+    exactly: the vendored Chatterbox pyproject owns the exact pin for the English
+    path (``==4.46.3``), and OmniVoice brings its own for the Vietnamese path.
     """
     stage5 = _parse(ROOT / "requirements-stage5.txt")
-    if "transformers" not in stage5:
-        return  # transformers arrives transitively from OmniVoice
-    spec = stage5["transformers"]
-    assert (
-        "==" not in spec
-    ), f"requirements-stage5.txt must not pin transformers exactly, got {spec!r}"
-    assert _floor(spec) >= QWEN_ALIGNER_MIN, (
-        f"requirements-stage5.txt pins {spec}, but the Qwen3 forced aligner "
-        "requires a transformers that ships Qwen3ASRProcessor (>=4.56)"
-    )
+    assert "whisperx" in stage5, "requirements-stage5.txt must ship whisperx"
+    if "transformers" in stage5:
+        spec = stage5["transformers"]
+        assert (
+            "==" not in spec
+        ), f"requirements-stage5.txt must not pin transformers exactly, got {spec!r}"
 
 
 def test_vendored_chatterbox_still_pins_transformers_exactly():

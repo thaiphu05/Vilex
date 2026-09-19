@@ -6,7 +6,7 @@ gives every sub-stage its own block:
     stage5:               # shared: mode, num_variants, seed, language, tags, ...
     stage5_1a_prep:       # 5.1a CPU text prep
     stage5_1b_render:     # 5.1b GPU OmniVoice
-    stage5_2a_align:      # 5.2a GPU VAD + Qwen3
+    stage5_2a_align:      # 5.2a GPU VAD + whisperx align
     stage5_2b_assemble:   # 5.2b CPU placement + timing + LUFS
 
 The monolithic ``convert_spoken.py`` keeps its flat view through
@@ -55,12 +55,11 @@ _DEFAULT_VOICE = {
 }
 
 _DEFAULT_ALIGNER = {
-    "model": "Qwen/Qwen3-ForcedAligner-0.6B-hf",
-    "dtype": "auto",
+    "model": "",  # "" -> whisperx default wav2vec2 for the language
     "granularity": "utterance",
     "max_secs": 240,
     "fallback": "proportional",
-    "batch": False,
+    "batch": False,  # kept for config compatibility; whisperx aligns per item
     "batch_size": 8,
 }
 

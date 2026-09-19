@@ -33,15 +33,15 @@
 torchaudio>=2.6,<3
 nltk>=3.8
 silero-vad>=6.2.1
+whisperx>=3.3.1
 numpy<2
 pyyaml>=6.0
 soundfile>=0.12
 
-# Forced alignment for backchannel anchoring + alignment JSON. Qwen3-ForcedAligner
-# runs on transformers' native Qwen3-ASR implementation, so a recent transformers
-# is required (AutoModelForTokenClassification / Qwen3ASRProcessor; native support
-# landed 2026-06-26). Bump this if `AutoProcessor` lacks the qwen3_asr model.
-transformers>=4.56
+# Forced alignment for backchannel anchoring + alignment JSON uses whisperx
+# (wav2vec2 per language). transformers is deliberately absent here: the
+# vendored Chatterbox package owns the pin for the English path, and the
+# Vietnamese/OmniVoice path brings its own.
 
 # ---------------------------------------------------------------------------
 # Block B — English (Chatterbox) path only.
@@ -52,10 +52,7 @@ nemo-text-processing>=1.1.0
 # Block C — Vietnamese (OmniVoice) path only. OmniVoice (k2-fsa) is installed
 # from source — it is not published to PyPI under a pinned version. Run:
 #   pip install git+https://github.com/k2-fsa/OmniVoice.git
-# Its own dependencies (soundfile, modelscope, etc.) come in with it. If its
-# transformers constraint conflicts with the >=4.56 above, install OmniVoice
-# first and then re-run `pip install "transformers>=4.56"` if the forced aligner
-# fails to import.
+# Its own dependencies (soundfile, modelscope, etc.) come in with it.
 # ---------------------------------------------------------------------------
 pyloudnorm>=0.1.1
 

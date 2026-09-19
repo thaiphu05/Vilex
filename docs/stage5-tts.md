@@ -95,7 +95,7 @@ each resource (CPU prep, GPU TTS, GPU align, CPU assemble) run on its own box:
 - **5.1b** `stage5b_render.py` (GPU, OmniVoice env) renders raw unit wavs; it
   batches across dialogues grouped by reference voice, records `failed_units`,
   `pause_samples` and `unit_audio`, and refuses if the voice pool changed.
-- **5.2a** `stage5c_align.py` (GPU, Qwen3 env) applies the same VAD trims, ×0.8
+- **5.2a** `stage5c_align.py` (GPU, OmniVoice env) applies the same VAD trims, ×0.8
   backchannel attenuation and forced alignment, writing `alignment.json`.
 - **5.2b** `stage5d_assemble.py` (CPU) places backchannels, runs the timing
   layer, normalises LUFS and writes the final `varNN/` tree with the monolithic
@@ -204,10 +204,10 @@ What changes under `backend: omnivoice` / `language: vi`:
   language="Vietnamese", normalize_text=True)`; `instruct` is the per-speaker
   voice-design string (no LibriSpeech prompt, no cumulative voice audio).
 * **Forced alignment.** Word timestamps (backchannel anchoring + the alignment
-  JSON) come from the **Qwen3 forced aligner** (`stage5_2a_align.aligner`, default
-  `Qwen/Qwen3-ForcedAligner-0.6B-hf`) run on each OmniVoice clip via
-  `transformers`. Note its checkpoints only officially cover 11 languages and
-  **not Vietnamese**, so VI timestamps are best-effort.
+  JSON) come from **whisperx** (`stage5_2a_align.aligner`, model chosen per
+  language; `aligner.model: ""` -> whisperx default wav2vec2) run on each
+  OmniVoice clip. VI timestamps are best-effort for languages without an
+  official alignment checkpoint.
 * **No NeMo.** `normalizer=None`; word counting falls back to a Vietnamese regex
   (`_VI_WORD_RE`) instead of `Normalizer.normalize`.
 * **Sentence splitting.** `split_sentences()` avoids the English-only `nltk`
@@ -228,7 +228,7 @@ What changes under `backend: omnivoice` / `language: vi`:
   `meta.json` in each `varNN/`. Each entry lists `turn`, `kind`
   (`utterance`/`backchannel`), `text`, absolute `start_sec`/`end_sec`, and
   word-level `words[{word,start,end}]` (times absolute in the merged
-  dialogue). Utterance words come from the Qwen3 forced aligner; backchannel
+  dialogue). Utterance words come from the whisperx aligner; backchannel
   words come from alignment when the BC has more than one word, otherwise an even
   split of its clip span. Enabling it makes those files part of the resume check
   (existing variants are re-rendered to fill them in).
