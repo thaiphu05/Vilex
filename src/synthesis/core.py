@@ -65,8 +65,6 @@ def sanitize_utterance(raw: str) -> str:
     s = re.sub(r"^```[a-zA-Z0-9_+-]*\s*", "", s).strip()
     s = re.sub(r"\s*```\s*$", "", s).strip()
 
-    # NOTE: bracket tokens such as [PAUSE] (and [TAKE_FLOOR]/[BACKCHANNEL]) are
-    # intentionally preserved — none of the prefix/quote rules below match them.
     # Peel leading prefixes in a loop to catch nested cases like
     # "10) user: \"hi there\"" → "hi there"
     for _ in range(4):
@@ -282,19 +280,13 @@ def predict_turn_taking_probabilities(
 
     # Cache prompt parts if possible, but here we loop
     for b_idx in boundary_indices:  # Exclude last boundary to avoid end-of-turn
-        # Full turn with a marker at the boundary point so the model knows the
-        # user is still speaking past this slot (not end-of-turn).
-        before = " ".join(words[: b_idx + 1])
-        after = " ".join(words[b_idx + 1 :])
-        if after:
-            full_turn = f"{before}  |<-- BOUNDARY (word {b_idx}) -->|  {after}"
-        else:
-            full_turn = before
+        # Partial utterance up to boundary
+        partial_turn = " ".join(words[: b_idx + 1])
 
         prompt = (
             f"Scenario description:\n{scenario_desc}\n\n"
             f"Dialogue context:\n{formatted_history}\n\n"
-            f"User turn (FULL — the user continues after the boundary):\n{full_turn}"
+            f"User turn:\n{partial_turn}"
         )
 
         # Retry logic or safe parsing
@@ -462,29 +454,6 @@ def predict_turn_taking_probabilities_hf(
 # --- Token Insertion (Unchanged logic, wrapped) ---
 
 
-def _ft_candidate(paired, words, guard):
-    """Best (idx, probs) for a single floor_taking decision this turn.
-
-    Requires ``idx >= guard``. Sentence-ending boundaries are eligible too: the
-    assistant may legitimately take the floor after the user completes a point
-    or asks a direct question.
-    """
-    best_idx = None
-    best_probs = None
-    best_p = -1.0
-    for idx, probs in paired:
-        if idx < guard:
-            continue
-        p = probs.get("floor_taking", 0.0)
-        if p > best_p:
-            best_p = p
-            best_idx = idx
-            best_probs = probs
-    if best_idx is None:
-        return None
-    return best_idx, best_probs
-
-
 def insert_action_tokens_from_llm_annotations(
     text: str,
     boundary_word_indices: List[int],
@@ -508,15 +477,6 @@ def insert_action_tokens_from_llm_annotations(
 
     paired = sorted(zip(boundary_word_indices, boundary_dists), key=lambda x: x[0])
 
-    # One floor_taking decision per turn: pick the best candidate (index >=
-    # guard) and sample once with its raw probability.
-    ft_choice = _ft_candidate(paired, words, interruption_guard_start)
-    ft_idx = None
-    if ft_choice is not None:
-        cand_idx, cand_probs = ft_choice
-        if rng.random() < cand_probs.get("floor_taking", 0.0):
-            ft_idx = cand_idx
-
     out_words: List[str] = []
     action_history: List[Dict[str, Any]] = [{"full_content": normalize_ws(text)}]
 
@@ -532,15 +492,18 @@ def insert_action_tokens_from_llm_annotations(
             decision = "silence"
             inserted = None
 
-            if ft_idx is not None and i == ft_idx and not floor_taking_triggered:
-                decision = "floor_taking"
-                inserted = TOKEN_FT
-                floor_taking_triggered = True
-            elif i < length_guard_start:
+            if i < length_guard_start or floor_taking_triggered:
                 decision = "silence"
             else:
                 sampled = _sample_action(probs, rng)
-                if sampled == "backchannel":
+                if sampled == "floor_taking":
+                    if i < interruption_guard_start:
+                        decision = "silence"
+                    else:
+                        decision = "floor_taking"
+                        inserted = TOKEN_FT
+                        floor_taking_triggered = True
+                elif sampled == "backchannel":
                     if last_bc_pos is None or (i - last_bc_pos) >= length_guard_gap:
                         decision = "backchannel"
                         inserted = TOKEN_BC
@@ -561,13 +524,7 @@ def insert_action_tokens_from_llm_annotations(
     out = normalize_ws(" ".join(out_words))
     # Post-processing cleanup
     if TOKEN_FT in out:
-        # Keep any [BACKCHANNEL] tokens that occur before [TAKE_FLOOR].
-        # Only strip [BACKCHANNEL] from text that follows the first FT.
-        parts = out.split(TOKEN_FT)
-        before_ft = normalize_ws(parts[0])
-        after_parts = [normalize_ws(p.replace(TOKEN_BC, "")) for p in parts[1:]]
-        after_ft = (" " + TOKEN_FT + " ").join(after_parts)
-        out = normalize_ws(before_ft + " " + TOKEN_FT + ((" " + after_ft) if after_ft else ""))
+        out = normalize_ws(" ".join([out.replace(TOKEN_BC, "").split(TOKEN_FT)[0], TOKEN_FT]))
     else:
         out = normalize_ws(out.replace(TOKEN_BC, ""))
 

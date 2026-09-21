@@ -159,22 +159,7 @@ _NORMALIZER = None
 TARGET_SR = 24000  # overridden from model.sr after loading
 PROMPT_SR = 16000
 
-# --- Timing distributions (Stage 5 audio assembly) ---
-# Empirical Exponential GAP scale (fitted to P50=0.49s, P75=0.98s)
-GAP_EXP_SCALE = 0.7067
-GAP_MIN_SEC = 0.003
-GAP_MAX_SEC = 2.50
-
-# Empirical Exponential PAUSE scale (fitted to P50=0.47s, max=4.0s)
-PAUSE_EXP_SCALE = 0.6780
-PAUSE_MIN_SEC = 0.001
-PAUSE_MAX_SEC = 4.00
-
-# Short intra-utterance pause for an explicit [PAUSE] token (Stage 1.75 rewrites
-# the "..." the Stage-1 LLM emits into [PAUSE]); the TTS cannot read "...".
-PAUSE_INTRA_EXP_SCALE = 0.30
-PAUSE_INTRA_MIN_SEC = 0.10
-PAUSE_INTRA_MAX_SEC = 1.00
+TURN_GAP_SEC = 0.16
 
 USER_INTERRUPT_OVERLAP_SEC = 0.64  # max overlap when user interrupts assistant (seconds)
 USER_INTERRUPT_PROB = 0.5  # probability that user interrupts assistant [reduced from 0.6]
@@ -250,23 +235,15 @@ def _resample(audio, orig_freq: int, new_freq: int):
 
 
 def _sample_gap(turn_dur_sec: float = 3.0) -> float:
-    """Sample an inter-speaker gap duration (seconds) from Exponential distribution, scaled by turn length."""
-    raw_gap = np.random.exponential(scale=GAP_EXP_SCALE)
-    scale_factor = float(np.clip((turn_dur_sec / 3.0) ** 0.25, 0.7, 1.5))
-    gap = raw_gap * scale_factor
-    return float(np.clip(gap, GAP_MIN_SEC, GAP_MAX_SEC))
+    return TURN_GAP_SEC
 
 
 def _sample_pause() -> float:
-    """Sample an intra-speaker pause duration (seconds) from Exponential distribution."""
-    raw_pause = np.random.exponential(scale=PAUSE_EXP_SCALE)
-    return float(np.clip(raw_pause, PAUSE_MIN_SEC, PAUSE_MAX_SEC))
+    return 0.0
 
 
 def _sample_intra_pause() -> float:
-    """Short pause (seconds) for an explicit [PAUSE] token between utterances."""
-    raw_pause = np.random.exponential(scale=PAUSE_INTRA_EXP_SCALE)
-    return float(np.clip(raw_pause, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC))
+    return 0.0
 
 
 def _loudness_normalize(waveform, sr, target=TARGET_LUFS):
@@ -1963,9 +1940,7 @@ def main_process(
 def _apply_tts_config(cfg):
     """Push config.yaml (stage5_1b_render/stage5_2a_align/stage5_2b_assemble.*) onto the module-level knobs."""
     global TARGET_SR, PROMPT_SR
-    global GAP_EXP_SCALE, GAP_MIN_SEC, GAP_MAX_SEC
-    global PAUSE_EXP_SCALE, PAUSE_MIN_SEC, PAUSE_MAX_SEC
-    global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
+    global TURN_GAP_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
     global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON, VAD_THRESHOLD
     global ALIGNER_MODEL, ALIGNER_DEVICE
@@ -1987,20 +1962,7 @@ def _apply_tts_config(cfg):
     TARGET_SR = s5.get("target_sr", TARGET_SR)
     PROMPT_SR = s5.get("prompt_sr", PROMPT_SR)
 
-    gap = timing.get("gap", {}) if isinstance(timing.get("gap"), dict) else {}
-    GAP_EXP_SCALE = gap.get("exp_scale", GAP_EXP_SCALE)
-    GAP_MIN_SEC = gap.get("min_sec", GAP_MIN_SEC)
-    GAP_MAX_SEC = gap.get("max_sec", GAP_MAX_SEC)
-
-    pause = timing.get("pause", {}) if isinstance(timing.get("pause"), dict) else {}
-    PAUSE_EXP_SCALE = pause.get("exp_scale", PAUSE_EXP_SCALE)
-    PAUSE_MIN_SEC = pause.get("min_sec", PAUSE_MIN_SEC)
-    PAUSE_MAX_SEC = pause.get("max_sec", PAUSE_MAX_SEC)
-
-    intra = timing.get("intra_pause", {}) if isinstance(timing.get("intra_pause"), dict) else {}
-    PAUSE_INTRA_EXP_SCALE = intra.get("exp_scale", PAUSE_INTRA_EXP_SCALE)
-    PAUSE_INTRA_MIN_SEC = intra.get("min_sec", PAUSE_INTRA_MIN_SEC)
-    PAUSE_INTRA_MAX_SEC = intra.get("max_sec", PAUSE_INTRA_MAX_SEC)
+    TURN_GAP_SEC = timing.get("turn_gap_sec", TURN_GAP_SEC)
 
     USER_INTERRUPT_OVERLAP_SEC = timing.get(
         "user_interrupt_overlap_sec", USER_INTERRUPT_OVERLAP_SEC
@@ -2438,27 +2400,7 @@ def main(args):
             total_speech_meta["user_prompt_speaker_id"] = libri_spk
             total_speech_meta["variant_idx"] = variant_idx
             total_speech_meta["timing_config"] = {
-                "gap": {
-                    "distribution": "exponential",
-                    "scale_sec": GAP_EXP_SCALE,
-                    "min_sec": GAP_MIN_SEC,
-                    "max_sec": GAP_MAX_SEC,
-                    "percentiles_fitted": {"min": 0.003, "P25": 0.203, "P50": 0.49, "P75": 0.98},
-                },
-                "pause": {
-                    "distribution": "exponential",
-                    "scale_sec": PAUSE_EXP_SCALE,
-                    "min_sec": PAUSE_MIN_SEC,
-                    "max_sec": PAUSE_MAX_SEC,
-                    "percentiles_fitted": {
-                        "min": 0.001,
-                        "P1": 0.007,
-                        "P25": 0.195,
-                        "P50": 0.47,
-                        "P75": 0.94,
-                        "max": 4.0,
-                    },
-                },
+                "turn_gap_sec": TURN_GAP_SEC,
                 "overlap_max_sec": USER_INTERRUPT_OVERLAP_SEC,
                 "user_interrupt_prob": USER_INTERRUPT_PROB,
             }

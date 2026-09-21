@@ -1,4 +1,4 @@
-"""Tests for turn-taking floor_taking filtering and turn-level decision."""
+"""Tests for turn-taking floor_taking insertion."""
 
 import random
 import sys
@@ -6,37 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.synthesis.core import _ft_candidate, insert_action_tokens_from_llm_annotations
-
-
-class TestFtCandidate:
-    def test_terminal_punct_is_a_candidate(self):
-        words = ["tôi", "sẽ", "dùng", "chiến", "lược.", "này", "để", "bán", "hàng"]
-        paired = [(4, {"floor_taking": 0.85, "backchannel": 0.1, "silence": 0.05})]
-        res = _ft_candidate(paired, words, guard=3)
-        assert res is not None
-        assert res[0] == 4
-
-    def test_picks_max_floor_taking(self):
-        words = ["tôi", "sẽ", "dùng", "chiến", "lược", "này", "để"]
-        paired = [
-            (4, {"floor_taking": 0.3, "backchannel": 0.5, "silence": 0.2}),
-            (5, {"floor_taking": 0.85, "backchannel": 0.1, "silence": 0.05}),
-        ]
-        idx, _ = _ft_candidate(paired, words, guard=3)
-        assert idx == 5
-
-    def test_respects_guard(self):
-        words = ["tôi", "sẽ", "dùng"]
-        paired = [(1, {"floor_taking": 0.9, "backchannel": 0.05, "silence": 0.05})]
-        assert _ft_candidate(paired, words, guard=3) is None
-
-    def test_returns_max_even_if_zero(self):
-        words = ["tôi", "sẽ", "dùng", "nó"]
-        paired = [(3, {"floor_taking": 0.0, "backchannel": 0.5, "silence": 0.5})]
-        idx, probs = _ft_candidate(paired, words, guard=0)
-        assert idx == 3
-        assert probs["floor_taking"] == 0.0
+from src.synthesis.core import insert_action_tokens_from_llm_annotations
 
 
 class TestTurnLevelFt:
