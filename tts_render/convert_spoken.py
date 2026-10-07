@@ -56,12 +56,20 @@ RENDER_TAGS = False
 # When True (stage5_2b_assemble.audio.save_align_json) write per-variant word-level
 # forced-alignment JSON (alignment_user.json / alignment_assistant.json).
 SAVE_ALIGN_JSON = False
+<<<<<<< Updated upstream
 # Forced aligner (stage5_2a_align.aligner.*): Qwen3-ForcedAligner gives word-level
 # timestamps for a known transcript, used to anchor backchannels to word-ends
 # and to build the alignment JSON. dtype "auto" -> bfloat16 on GPUs that support
 # it, else float16.
 ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 ALIGNER_DTYPE = "auto"
+=======
+# Forced aligner (stage5_2a_align.aligner.*) gives word-level timestamps for a
+# known transcript, used to anchor backchannels and build alignment JSON.
+# Backend is whisperx (wav2vec2) or qwen (Qwen3 forced aligner).
+ALIGNER_BACKEND = "whisperx"
+ALIGNER_MODEL = ""
+>>>>>>> Stashed changes
 ALIGNER_DEVICE = "cuda"
 # Aligner behaviour (stage5_2a_align.aligner.*).
 ALIGN_GRANULARITY = "utterance"  # utterance | sentence  (sentence = align each generated unit)
@@ -1030,7 +1038,11 @@ def _resolve_aligner_dtype(dtype_name, device):
 
 
 def _load_forced_aligner(model_id=None, dtype_name=None, device=None):
+<<<<<<< Updated upstream
     """Load the Qwen3-ForcedAligner (processor + model) for word timestamps.
+=======
+    """Load configured forced aligner for word timestamps.
+>>>>>>> Stashed changes
 
     Defaults are resolved from the module globals at call time (not def time) so
     the config values applied by ``_apply_tts_config`` actually take effect.
@@ -1042,6 +1054,7 @@ def _load_forced_aligner(model_id=None, dtype_name=None, device=None):
     model_id = model_id or ALIGNER_MODEL
     dtype_name = dtype_name or ALIGNER_DTYPE
     device = device or ALIGNER_DEVICE
+<<<<<<< Updated upstream
     torch_dtype = _resolve_aligner_dtype(dtype_name, device)
     processor = AutoProcessor.from_pretrained(model_id)
     model = AutoModelForTokenClassification.from_pretrained(model_id, dtype=torch_dtype)
@@ -1065,6 +1078,80 @@ def _timestamps_to_words(stamps):
             }
         )
     return words
+=======
+    if ALIGNER_BACKEND == "qwen":
+        if not model_id:
+            raise ValueError("stage5_2a_align.aligner.model is required for qwen backend")
+        try:
+            from qwen_asr import Qwen3ForcedAligner
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "Qwen alignment requires qwen-asr; install it in the Stage 5 environment"
+            ) from exc
+        kwargs = {"device": device}
+        try:
+            aligner = Qwen3ForcedAligner.from_pretrained(model_id, **kwargs)
+        except TypeError:
+            # Older qwen-asr releases do not accept device in from_pretrained.
+            aligner = Qwen3ForcedAligner.from_pretrained(model_id)
+            if device == "cuda" and hasattr(aligner, "cuda"):
+                aligner = aligner.cuda()
+        if hasattr(aligner, "eval"):
+            aligner.eval()
+        logging.info("Loaded qwen aligner model=%s device=%s", model_id, device)
+        return {"backend": "qwen", "model": aligner, "device": device}
+
+    if ALIGNER_BACKEND != "whisperx":
+        raise ValueError(f"Unknown alignment backend: {ALIGNER_BACKEND!r}")
+    import whisperx
+
+    language = _align_language()
+    model_a, metadata = whisperx.load_align_model(
+        language_code=language, model_name=model_id or None, device=device
+    )
+    logging.info(
+        "Loaded whisperx aligner lang=%s (model=%s device=%s)",
+        language,
+        model_id or "default",
+        device,
+    )
+    return {
+        "backend": "whisperx",
+        "model_a": model_a,
+        "metadata": metadata,
+        "device": device,
+        "language": language,
+    }
+
+
+def _qwen_word_records(result):
+    """Extract normalized word records from qwen-asr alignment output."""
+    if isinstance(result, dict):
+        for key in ("words", "word_segments", "segments", "timestamps"):
+            if key in result:
+                return _qwen_word_records(result[key])
+        word = result.get("word", result.get("text"))
+        start = result.get("start", result.get("start_time"))
+        end = result.get("end", result.get("end_time"))
+        if word is not None and start is not None and end is not None:
+            return [{"word": word, "start": start, "end": end}]
+        return []
+    if isinstance(result, (list, tuple)):
+        out = []
+        for item in result:
+            out.extend(_qwen_word_records(item))
+        return out
+    for key in ("words", "word_segments", "segments", "timestamps"):
+        nested = getattr(result, key, None)
+        if nested is not None:
+            return _qwen_word_records(nested)
+    word = getattr(result, "word", getattr(result, "text", None))
+    start = getattr(result, "start", getattr(result, "start_time", None))
+    end = getattr(result, "end", getattr(result, "end_time", None))
+    if word is not None and start is not None and end is not None:
+        return [{"word": word, "start": start, "end": end}]
+    return []
+>>>>>>> Stashed changes
 
 
 def _align_words_once(align, audio, text):
@@ -1090,8 +1177,35 @@ def _align_words_once(align, audio, text):
     audio_16k = _resample(mono, orig_freq=TARGET_SR, new_freq=PROMPT_SR)
     wav = audio_16k.squeeze(0).numpy().astype(np.float32)
     try:
+<<<<<<< Updated upstream
         inputs, word_lists = align["processor"].prepare_forced_aligner_inputs(
             audio=wav, transcript=text, language=None
+=======
+        if align.get("backend", "whisperx") == "qwen":
+            audio_np = audio_16k.squeeze(0).detach().cpu().numpy()
+            qwen = align["model"]
+            try:
+                result = qwen.align(audio=(audio_np, PROMPT_SR), text=text)
+            except TypeError:
+                result = qwen.align((audio_np, PROMPT_SR), text)
+            words = [
+                {"word": str(w["word"]), "start": float(w["start"]), "end": float(w["end"])}
+                for w in _qwen_word_records(result)
+                if w.get("word") is not None and w.get("start") is not None and w.get("end") is not None
+            ]
+            if not words:
+                raise RuntimeError(f"Qwen aligner returned no word timestamps for {text[:40]!r}")
+            return words
+        import whisperx
+
+        result = whisperx.align(
+            segments,
+            align["model_a"],
+            align["metadata"],
+            audio_16k,
+            align.get("device", ALIGNER_DEVICE),
+            return_char_alignments=False,
+>>>>>>> Stashed changes
         )
         model = align["model"]
         inputs = inputs.to(model.device, model.dtype)
@@ -1104,6 +1218,8 @@ def _align_words_once(align, audio, text):
             timestamp_token_id=model.config.timestamp_token_id,
         )[0]
     except Exception as exc:  # pragma: no cover - defensive
+        if align.get("backend", "whisperx") == "qwen":
+            raise RuntimeError(f"Qwen alignment failed for {text[:40]!r}: {exc}") from exc
         logging.warning("Alignment failed for %r: %s", text[:40], exc)
         return []
     return _timestamps_to_words(stamps)
@@ -2036,7 +2152,11 @@ def _apply_tts_config(cfg):
     global PAUSE_INTRA_EXP_SCALE, PAUSE_INTRA_MIN_SEC, PAUSE_INTRA_MAX_SEC
     global USER_INTERRUPT_OVERLAP_SEC, USER_INTERRUPT_PROB
     global MAX_PROMPT_SECS, TARGET_LUFS, NOISE_FLOOR_AMP, SAVE_ALIGN_JSON, VAD_THRESHOLD
+<<<<<<< Updated upstream
     global ALIGNER_MODEL, ALIGNER_DTYPE, ALIGNER_DEVICE
+=======
+    global ALIGNER_BACKEND, ALIGNER_MODEL, ALIGNER_DEVICE
+>>>>>>> Stashed changes
     global ALIGN_GRANULARITY, ALIGN_MAX_SECS, ALIGN_FALLBACK, ALIGN_BATCH, ALIGN_BATCH_SIZE
     global PROFILE, BC_PLACEMENT, _BC_PLACEMENT_RESOLVED
     global OMNI_BATCH, OMNI_BATCH_SIZE, OMNI_MAX_UNIT_CHARS, OMNI_MAX_RETRIES
@@ -2081,6 +2201,7 @@ def _apply_tts_config(cfg):
     SAVE_ALIGN_JSON = bool(audio.get("save_align_json", SAVE_ALIGN_JSON))
     VAD_THRESHOLD = float(audio.get("vad_threshold", VAD_THRESHOLD))
 
+    ALIGNER_BACKEND = str(aligner.get("backend", ALIGNER_BACKEND)).lower()
     ALIGNER_MODEL = aligner.get("model") or ALIGNER_MODEL
     ALIGNER_DTYPE = aligner.get("dtype") or ALIGNER_DTYPE
     ALIGNER_DEVICE = aligner.get("device") or s5.get("device", ALIGNER_DEVICE)

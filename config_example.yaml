@@ -225,8 +225,13 @@ stage5_2a_align:
   vad_threshold: 0.3           # Silero VAD speech probability (CPU, tiny model)
   max_prompt_secs: 10          # reference clip clamp
   aligner:
+<<<<<<< Updated upstream
     model: Qwen/Qwen3-ForcedAligner-0.6B-hf
     dtype: auto                # auto (bf16 on Ampere+, fp16 else) | bfloat16 | float16 | float32
+=======
+    backend: whisperx           # whisperx (wav2vec2) | qwen (Qwen3 forced aligner)
+    model: ""                  # "" -> whisperx default wav2vec2 for the language
+>>>>>>> Stashed changes
     granularity: utterance     # utterance (whole turn) | sentence (per generated unit)
     max_secs: 240              # skip the model above this length -> fallback
     fallback: proportional     # drop | proportional

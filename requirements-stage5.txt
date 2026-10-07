@@ -33,6 +33,12 @@
 torchaudio>=2.6,<3
 nltk>=3.8
 silero-vad>=6.2.1
+<<<<<<< Updated upstream
+=======
+whisperx>=3.3.1
+# Optional Qwen backend: install when stage5_2a_align.aligner.backend=qwen.
+# qwen-asr
+>>>>>>> Stashed changes
 numpy<2
 pyyaml>=6.0
 soundfile>=0.12

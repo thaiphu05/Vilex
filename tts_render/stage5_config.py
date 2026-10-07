@@ -55,8 +55,13 @@ _DEFAULT_VOICE = {
 }
 
 _DEFAULT_ALIGNER = {
+<<<<<<< Updated upstream
     "model": "Qwen/Qwen3-ForcedAligner-0.6B-hf",
     "dtype": "auto",
+=======
+    "backend": "whisperx",  # whisperx | qwen
+    "model": "",  # "" -> whisperx default wav2vec2 for the language
+>>>>>>> Stashed changes
     "granularity": "utterance",
     "max_secs": 240,
     "fallback": "proportional",

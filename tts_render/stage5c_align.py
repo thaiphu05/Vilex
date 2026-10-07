@@ -1,4 +1,8 @@
+<<<<<<< Updated upstream
 """Stage 5.2a — VAD trim + Qwen3 forced alignment (GPU) for the split pipeline.
+=======
+"""Stage 5.2a — VAD trim + configurable forced alignment for split pipeline.
+>>>>>>> Stashed changes
 
 Consumes the raw unit wavs written by 5.1b, rebuilds each host utterance with
 its pause units, applies the same Silero VAD trimming as the monolithic path,
@@ -193,7 +197,7 @@ def main(config_path=None, limit: int = 0) -> None:
     language = effective_language(s5, "stage5_2a_align")
     language = "vi" if language.lower().startswith("vi") else "en"
 
-    import convert_spoken as cs  # heavy: torch + VAD + aligner
+    import convert_spoken as cs  # heavy: torch + VAD + configured aligner
 
     cs._apply_tts_config(cfg)
     if (
@@ -224,7 +228,11 @@ def main(config_path=None, limit: int = 0) -> None:
 
 
 if __name__ == "__main__":
+<<<<<<< Updated upstream
     _ap = argparse.ArgumentParser(description="Stage 5.2a: VAD + Qwen3 alignment (GPU).")
+=======
+    _ap = argparse.ArgumentParser(description="Stage 5.2a: VAD + configured alignment.")
+>>>>>>> Stashed changes
     _ap.add_argument("--config", default=None, help="Path to config.yaml")
     _ap.add_argument("--limit", type=int, default=0, help="cap variants (0 = all)")
     _args = _ap.parse_args()
