@@ -6,6 +6,12 @@ from tqdm import tqdm
 
 from src.config import apply_runtime_config, cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client, no_thinking_extra_body
+from src.ninerouter_client import (
+    is_9router_enabled,
+    load_9router_settings,
+    make_9router_client,
+    resolve_9router_model,
+)
 
 # ================================
 # Configuration
@@ -272,7 +278,13 @@ def configure(cfg):
 
     INPUT_ROOT = Path(paths.get("synthesis_root", "data/vi_tt"))
     OUTPUT_ROOT = Path(paths.get("bc_root", "data/vi_tt_bc"))
-    client = make_client(MODEL_NAME, API_KEY, BASE_URL, anthropic_mode=ANTHROPIC_MODE)
+    if is_9router_enabled(cfg):
+        settings = load_9router_settings(cfg)
+        MODEL_NAME = resolve_9router_model(settings, "bc")
+        client = make_9router_client(settings)
+        print(f"[9router] {settings['base_url']} bc={MODEL_NAME}")
+    else:
+        client = make_client(MODEL_NAME, API_KEY, BASE_URL, anthropic_mode=ANTHROPIC_MODE)
 
 
 def main(config_path=None):

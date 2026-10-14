@@ -14,6 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 # handles detection dynamically within speechify_turn_by_turn
 from src.config import apply_runtime_config, cfg_get, load_config, resolve_llm_model
 from src.llm_client import make_client
+from src.ninerouter_client import (
+    is_9router_enabled,
+    load_9router_settings,
+    make_9router_client,
+    resolve_9router_model,
+)
 from src.synthesis.core import speechify_turn_by_turn
 from src.synthesis.prompts import _normalize_ws
 
@@ -151,16 +157,20 @@ def _apply_stage4_config(cfg):
         core.HESITATIONS = set(hesitations)
 
 
-def main(config_path=None):
-    cfg = load_config(config_path)
-    apply_runtime_config(cfg)
-    args = _build_args(cfg)
-    _apply_stage4_config(cfg)
+def _load_tt_hf(args):
+    """Stage 3 HF classifier for turn-taking scoring, or (None, None)."""
+    if not args.hf_model_name_or_path:
+        return None, None
+    print(f"Loading HF TT classification model: {args.hf_model_name_or_path}")
+    return _load_hf_tt_model(
+        model_name_or_path=args.hf_model_name_or_path,
+        peft_path=args.hf_peft_path,
+        load_in_4bit=args.hf_load_in_4bit,
+    )
 
-    input_root = Path(args.input_root)
-    save_root = Path(args.save_root)
 
-    # 1. Initialize Clients
+def _init_default_clients(args):
+    """Clients via make_client (backend picked from the model name)."""
     # Main generation client
     client = make_client(
         args.llm_model_name,
@@ -182,23 +192,54 @@ def main(config_path=None):
     )
 
     # Turn-taking scoring: HF classification model OR LLM-based client
-    hf_model = None
-    hf_tokenizer = None
-    if args.hf_model_name_or_path:
-        print(f"Loading HF TT classification model: {args.hf_model_name_or_path}")
-        hf_model, hf_tokenizer = _load_hf_tt_model(
-            model_name_or_path=args.hf_model_name_or_path,
-            peft_path=args.hf_peft_path,
-            load_in_4bit=args.hf_load_in_4bit,
-        )
-        client_tt = None  # not needed when using HF model
-    else:
+    hf_model, hf_tokenizer = _load_tt_hf(args)
+    client_tt = None  # not needed when using HF model
+    if hf_model is None:
         client_tt = make_client(
             args.tt_model_name,
             args.tt_api_key,
             args.tt_base_url,
             anthropic_mode=args.anthropic_mode,
         )
+
+    return client, client_boundary, client_tt, hf_model, hf_tokenizer
+
+
+def _init_9router_clients(cfg, args):
+    """All LLM roles through the 9router gateway (config section `nine_router`).
+
+    One shared client so `nine_router.min_interval` paces every role together.
+    Role models replace the llm.* names resolved in _build_args.
+    """
+    settings = load_9router_settings(cfg)
+    client = make_9router_client(settings)
+    args.llm_model_name = resolve_9router_model(settings, "writer")
+    args.boundary_model_name = resolve_9router_model(settings, "boundary")
+    args.tt_model_name = resolve_9router_model(settings, "tt")
+    hf_model, hf_tokenizer = _load_tt_hf(args)
+    client_tt = None if hf_model is not None else client
+    print(
+        f"[9router] {settings['base_url']} writer={args.llm_model_name} "
+        f"boundary={args.boundary_model_name} "
+        f"tt={'HF ' + args.hf_model_name_or_path if hf_model is not None else args.tt_model_name}"
+    )
+    return client, client, client_tt, hf_model, hf_tokenizer
+
+
+def main(config_path=None):
+    cfg = load_config(config_path)
+    apply_runtime_config(cfg)
+    args = _build_args(cfg)
+    _apply_stage4_config(cfg)
+
+    input_root = Path(args.input_root)
+    save_root = Path(args.save_root)
+
+    # 1. Initialize Clients
+    if is_9router_enabled(cfg):
+        client, client_boundary, client_tt, hf_model, hf_tokenizer = _init_9router_clients(cfg, args)
+    else:
+        client, client_boundary, client_tt, hf_model, hf_tokenizer = _init_default_clients(args)
 
     datasets = cfg_get(cfg, "run.datasets", [])
     splits = cfg_get(cfg, "run.splits", ["train"])
