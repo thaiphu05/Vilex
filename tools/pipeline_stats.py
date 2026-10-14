@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.pack_corpus import DIR2CODE  # noqa: E402
 from tools.stage5a_stats import analyze, distribution  # noqa: E402
 
 DATASETS = (
@@ -52,6 +53,43 @@ STAGES = (
     ("S4", "vi_tt"),
     ("S4B", "vi_tt_bc"),
 )
+
+# Scenario order of the DuplexGen paper (cooperative | competitive).
+SCENARIOS = ("TEA", "PLN", "INT", "NEG", "PER", "SOC")
+# Single-token filled pauses: FP_INVENTORY (src/disfluency.py) + HESITATIONS
+# (src/synthesis/core.py), copied here to keep this tool standard-library only.
+FILLERS = {
+    "ừm", "à", "ờ", "ừ", "hừm", "ơ", "ưm", "um", "ơi", "hử", "chà", "á", "ú",
+    "uh", "umm", "uhh", "hm", "hmm", "huh", "er", "ah",
+}  # fmt: skip
+PUNCT = ".,?!;:…\"'“”‘’()-"
+# Reference numbers from DuplexGen (arXiv 2607.26178v2).
+# Fig. 3: human-annotated (backchannel, take_floor) proportion per slot.
+PAPER_HUMAN_RATES = {
+    "TEA": (0.32, 0.08),
+    "PLN": (0.27, 0.09),
+    "INT": (0.25, 0.05),
+    "NEG": (0.23, 0.11),
+    "PER": (0.24, 0.12),
+    "SOC": (0.23, 0.12),
+}
+# Table 5 slots (calibration + evaluation) over 140 annotated utterances per task.
+PAPER_SLOTS_PER_UTT = {
+    "TEA": (160 + 383) / 140,
+    "PLN": (148 + 341) / 140,
+    "INT": (415 + 1016) / 140,
+    "NEG": (242 + 439) / 140,
+    "PER": (232 + 577) / 140,
+    "SOC": (198 + 497) / 140,
+}
+# Table 3: (label, words, filler %, repetition %); Table 4: words and slots per utterance.
+PAPER_SPOKEN = (
+    ("Switchboard (người thật)", 1518024, 3.88, 1.39),
+    ("DuplexGen user", 127786, 3.50, 0.43),
+    ("DuplexGen assistant", 148430, 0.38, 0.01),
+)
+PAPER_WORDS_PER_UTT = 24.57
+PAPER_AVG_SLOTS_PER_UTT = 5.57
 
 
 # ----------------------------------------------------------------- formatting
@@ -142,10 +180,34 @@ def disfluency_stats(items):
     }
 
 
+def realized_slots(turn):
+    """(slots, ignored): decisions up to the first floor_taking of the turn.
+
+    Text after [TAKE_FLOOR] is cut at render time, so decisions recorded past it
+    (older Stage 4 outputs still sampled backchannels there) are never heard.
+    """
+    segs = [s for s in turn.get("history") or [] if isinstance(s, dict) and "decision" in s]
+    ft = min(
+        (s["word_index"] for s in segs if s["decision"] == "floor_taking" and "word_index" in s),
+        default=None,
+    )
+    if ft is None:
+        return segs, 0
+    kept = [s for s in segs if s.get("word_index", ft) <= ft]
+    return kept, len(segs) - len(kept)
+
+
+def spoken_tokens(text):
+    """Normalized tokens actually spoken: text before [TAKE_FLOOR], tags removed."""
+    text = str(text).split("[TAKE_FLOOR]")[0]
+    words = re.sub(r"\[[^\]]*\]", " ", text).split()
+    return [w for w in (w.strip(PUNCT).lower() for w in words) if w]
+
+
 def slot_stats(items):
     decisions, by_role = Counter(), Counter()
     bc, user_turns, ft_tokens, modes, models = Counter(), 0, 0, Counter(), Counter()
-    bc_total = bc_filled = bc_words = bc_tagged = 0
+    bc_total = bc_filled = bc_words = bc_tagged = ignored = 0
     for _, _, d in items:
         meta = d.get("meta") or {}
         modes[str(meta.get("tt_mode", "unknown"))] += 1
@@ -153,9 +215,9 @@ def slot_stats(items):
         for t in d["history"]:
             user_turns += 1 if t.get("role") == "user" else 0
             ft_tokens += str(t.get("content", "")).count("[TAKE_FLOOR]")
-            for seg in t.get("history") or []:
-                if not isinstance(seg, dict) or "decision" not in seg:
-                    continue
+            segs, dropped = realized_slots(t)
+            ignored += dropped
+            for seg in segs:
                 decisions[seg["decision"]] += 1
                 by_role[(t.get("role"), seg["decision"])] += 1
                 if seg["decision"] == "backchannel":
@@ -170,6 +232,7 @@ def slot_stats(items):
     top = bc.most_common(10)
     return {
         "slots": slots,
+        "post_ft_ignored": ignored,
         "decisions": dict(decisions),
         "by_role": {f"{r}:{k}": v for (r, k), v in sorted(by_role.items(), key=str)},
         "user_turns": user_turns,
@@ -201,6 +264,249 @@ def llm_calls(items, slots):
     }
     total = sum(parts.values())
     return {"parts": parts, "total": total, "per_dialogue": total / n if n else 0.0}
+
+
+def scenario_of(dataset):
+    return DIR2CODE.get(dataset, dataset.upper())
+
+
+def duplexgen_stats(items):
+    """Per-scenario corpus / turn-taking / spoken-style numbers, as DuplexGen reports them."""
+    rows = defaultdict(
+        lambda: {
+            "dialogues": 0,
+            "turns": Counter(),
+            "words": Counter(),
+            "slots": 0,
+            "decisions": Counter(),
+            "probs": Counter(),
+            "user_turns_with_ft": 0,
+        }
+    )
+    spoken = {r: Counter() for r in ("user", "assistant")}
+    for ds, _, d in items:
+        row = rows[scenario_of(ds)]
+        row["dialogues"] += 1
+        for t in d["history"]:
+            role = t.get("role")
+            if role not in spoken:
+                continue
+            toks = spoken_tokens(t.get("content", ""))
+            row["turns"][role] += 1
+            row["words"][role] += len(toks)
+            spoken[role]["words"] += len(toks)
+            spoken[role]["fillers"] += sum(w in FILLERS for w in toks)
+            spoken[role]["repetitions"] += sum(a == b for a, b in zip(toks, toks[1:]))
+            if role != "user":
+                continue
+            segs, _ = realized_slots(t)
+            row["slots"] += len(segs)
+            row["user_turns_with_ft"] += any(s["decision"] == "floor_taking" for s in segs)
+            for s in segs:
+                row["decisions"][s["decision"]] += 1
+                for label, p in (s.get("probs") or {}).items():
+                    if isinstance(p, (int, float)):
+                        row["probs"][label] += p
+
+    def derive(row):
+        users, slots = row["turns"]["user"], row["slots"]
+
+        def per(n, d):
+            return n / d if d else 0.0
+
+        return {
+            "dialogues": row["dialogues"],
+            "user_utts": users,
+            "assistant_utts": row["turns"]["assistant"],
+            "words_per_utt_user": per(row["words"]["user"], users),
+            "words_per_utt_assistant": per(row["words"]["assistant"], row["turns"]["assistant"]),
+            "slots": slots,
+            "slots_per_utt": per(slots, users),
+            "words_per_slot": per(row["words"]["user"], slots),
+            "bc_per_slot": per(row["decisions"]["backchannel"], slots),
+            "ft_per_slot": per(row["decisions"]["floor_taking"], slots),
+            "silence_per_slot": per(row["decisions"]["silence"], slots),
+            "p_bc": per(row["probs"]["backchannel"], slots),
+            "p_ft": per(row["probs"]["floor_taking"], slots),
+            "ft_turn_pct": pct(row["user_turns_with_ft"], users),
+            "bc_per_utt": per(row["decisions"]["backchannel"], users),
+        }
+
+    total = rows["ALL"]
+    for code, row in list(rows.items()):
+        if code == "ALL":
+            continue
+        total["dialogues"] += row["dialogues"]
+        total["slots"] += row["slots"]
+        total["user_turns_with_ft"] += row["user_turns_with_ft"]
+        for key in ("turns", "words", "decisions", "probs"):
+            total[key].update(row[key])
+    order = [c for c in SCENARIOS if c in rows] + sorted(set(rows) - set(SCENARIOS) - {"ALL"})
+    return {
+        "scenarios": {c: derive(rows[c]) for c in order + ["ALL"]},
+        "spoken": {
+            role: {
+                "words": c["words"],
+                "filler_pct": pct(c["fillers"], c["words"]),
+                "repetition_pct": pct(c["repetitions"], c["words"]),
+            }
+            for role, c in spoken.items()
+        },
+    }
+
+
+def tts_by_scenario(s5):
+    """Clips (variants), distinct dialogues, BCs and interrupt hosts per scenario."""
+    rows = defaultdict(Counter)
+    for g in s5["by_dataset_split"]:
+        for code in (scenario_of(g["dataset"]), "ALL"):
+            row = rows[code]
+            row["clips"] += g["variants"]
+            row["dialogues"] += g["dialogues"]
+            row["backchannels"] += g["totals"].get("backchannels", 0)
+            row["interrupt_hosts"] += g["totals"].get("interrupt_hosts", 0)
+            row["host_utterances"] += g["totals"].get("host_utterances", 0)
+    order = [c for c in SCENARIOS if c in rows] + sorted(set(rows) - set(SCENARIOS) - {"ALL"})
+    return {c: dict(rows[c]) for c in order + ["ALL"]}
+
+
+def duplexgen_numbers(dg, tts):
+    numbers = {}
+    for code, r in dg["scenarios"].items():
+        k = f"DG_{code}_"
+        numbers[k + "DIALOGUES"] = fmt_int(r["dialogues"])
+        numbers[k + "USER_UTTS"] = fmt_int(r["user_utts"])
+        numbers[k + "ASSISTANT_UTTS"] = fmt_int(r["assistant_utts"])
+        numbers[k + "WORDS_PER_UTT_USER"] = fmt_num(r["words_per_utt_user"], 2)
+        numbers[k + "WORDS_PER_UTT_ASSISTANT"] = fmt_num(r["words_per_utt_assistant"], 2)
+        numbers[k + "SLOTS"] = fmt_int(r["slots"])
+        numbers[k + "SLOTS_PER_UTT"] = fmt_num(r["slots_per_utt"], 2)
+        numbers[k + "WORDS_PER_SLOT"] = fmt_num(r["words_per_slot"], 2)
+        for name in ("bc_per_slot", "ft_per_slot", "silence_per_slot", "p_bc", "p_ft"):
+            numbers[k + name.upper()] = fmt_num(r[name], 3)
+        numbers[k + "FT_TURN_PCT"] = fmt_num(r["ft_turn_pct"])
+        numbers[k + "BC_PER_UTT"] = fmt_num(r["bc_per_utt"], 2)
+    for role, s in dg["spoken"].items():
+        k = f"DG_{role.upper()}_"
+        numbers[k + "WORDS"] = fmt_int(s["words"])
+        numbers[k + "FILLER_PCT"] = fmt_num(s["filler_pct"], 2)
+        numbers[k + "REP_PCT"] = fmt_num(s["repetition_pct"], 2)
+    for code, r in (tts or {}).items():
+        k = f"DG_{code}_"
+        numbers[k + "CLIPS"] = fmt_int(r["clips"])
+        numbers[k + "BC_PER_CLIP"] = fmt_num(r["backchannels"] / r["clips"] if r["clips"] else 0, 2)
+        numbers[k + "INT_PER_CLIP"] = fmt_num(
+            r["interrupt_hosts"] / r["clips"] if r["clips"] else 0, 2
+        )
+    return numbers
+
+
+def duplexgen_markdown(dg, tts):
+    sc = dg["scenarios"]
+    codes = [c for c in sc if c != "ALL"]
+    head = "| | " + " | ".join(codes) + " | Tổng |"
+    sep = "|---|" + "---:|" * (len(codes) + 1)
+
+    def row(label, key, digits=2, fn=fmt_num):
+        return f"| {label} | " + " | ".join(fn(sc[c][key], digits) for c in codes + ["ALL"]) + " |"
+
+    def paper(label, values, digits=2):
+        cells = [fmt_num(values[c], digits) if c in values else "-" for c in codes]
+        return f"| *{label}* | " + " | ".join(cells) + " | |"
+
+    def ints(x, _):
+        return fmt_int(x)
+
+    lines = [
+        "# Thống kê kiểu DuplexGen",
+        "",
+        "Số liệu Vilex tính trên vi_tt_bc (Stage 4b) và manifest Stage 5.1a. Dòng in nghiêng là số",
+        "của paper DuplexGen (arXiv 2607.26178v2) để so sánh.",
+        "",
+        "## 1. Corpus (paper Table 4, Table 5, dataset card)",
+        "",
+        head,
+        sep,
+        row("Hội thoại", "dialogues", fn=ints),
+        row("Lượt user", "user_utts", fn=ints),
+        row("Lượt assistant", "assistant_utts", fn=ints),
+        row("Từ / lượt user", "words_per_utt_user"),
+        row("Từ / lượt assistant", "words_per_utt_assistant"),
+        row("Slot", "slots", fn=ints),
+        row("Slot / lượt user", "slots_per_utt"),
+        paper("Paper: slot / lượt (Table 5)", PAPER_SLOTS_PER_UTT),
+        row("Từ / slot", "words_per_slot"),
+        "",
+        f"Paper Table 4 (gộp 6 scenario): {fmt_num(PAPER_WORDS_PER_UTT, 2)} từ/lượt, "
+        f"{fmt_num(PAPER_AVG_SLOTS_PER_UTT, 2)} slot/lượt. Dataset card: 5.999 hội thoại, "
+        "125.137 slot.",
+        "",
+        "## 2. Hành vi turn-taking mỗi slot (paper Fig. 3)",
+        "",
+        head,
+        sep,
+        row("BC / slot", "bc_per_slot", 3),
+        paper("Paper: BC / slot (người)", {c: v[0] for c, v in PAPER_HUMAN_RATES.items()}),
+        row("FT / slot", "ft_per_slot", 3),
+        paper("Paper: FT / slot (người)", {c: v[1] for c, v in PAPER_HUMAN_RATES.items()}),
+        row("Silence / slot", "silence_per_slot", 3),
+        row("Xác suất BC trung bình", "p_bc", 3),
+        row("Xác suất FT trung bình", "p_ft", 3),
+        row("% lượt user có FT", "ft_turn_pct", 1),
+        row("BC / lượt user", "bc_per_utt"),
+        "",
+        "## 3. Văn nói theo role (paper Table 3)",
+        "",
+        "| Nguồn | Số từ | Filler % | Lặp từ % |",
+        "|---|---:|---:|---:|",
+    ]
+    for role, s in dg["spoken"].items():
+        lines.append(
+            f"| Vilex {role} | {fmt_int(s['words'])} | {fmt_num(s['filler_pct'], 2)} "
+            f"| {fmt_num(s['repetition_pct'], 2)} |"
+        )
+    for label, words, filler, rep in PAPER_SPOKEN:
+        lines.append(f"| *{label}* | {fmt_int(words)} | {fmt_num(filler, 2)} | {fmt_num(rep, 2)} |")
+    if tts:
+        tcodes = [c for c in tts if c != "ALL"] + ["ALL"]
+        lines += [
+            "",
+            "## 4. Audio Stage 5.1a (dataset card duplexgen-spoken)",
+            "",
+            "| | " + " | ".join(c if c != "ALL" else "Tổng" for c in tcodes) + " |",
+            "|---|" + "---:|" * len(tcodes),
+            "| Clip (variant) | " + " | ".join(fmt_int(tts[c]["clips"]) for c in tcodes) + " |",
+            "| Hội thoại | " + " | ".join(fmt_int(tts[c]["dialogues"]) for c in tcodes) + " |",
+            "| BC / clip | "
+            + " | ".join(
+                fmt_num(tts[c]["backchannels"] / tts[c]["clips"] if tts[c]["clips"] else 0, 2)
+                for c in tcodes
+            )
+            + " |",
+            "| Interrupt / clip | "
+            + " | ".join(
+                fmt_num(tts[c]["interrupt_hosts"] / tts[c]["clips"] if tts[c]["clips"] else 0, 2)
+                for c in tcodes
+            )
+            + " |",
+            "",
+            "Paper (duplexgen-spoken): 35.746 clip (TEA 5.942, PLN 6.000, INT 5.875, NEG 5.988, "
+            "PER 5.987, SOC 5.954), 10 variant/hội thoại, 24 kHz.",
+        ]
+    lines += [
+        "",
+        "## Cách đọc",
+        "",
+        "- Từ = token cách trắng. Tiếng Việt tách theo âm tiết nên số từ cao hơn tiếng Anh cho cùng nội dung.",
+        "- Lượt có [TAKE_FLOOR] chỉ tính phần trước điểm ngắt; quyết định sau điểm ngắt bị loại "
+        "(không được phát ra).",
+        "- Tỉ lệ paper ở mục 2 là phân bố nhãn của người gán nhãn; tỉ lệ Vilex là quyết định "
+        "đã bốc từ predictor, xác suất trung bình là đầu ra predictor.",
+        '- Filler = token đơn trong tập filled pause tiếng Việt/Anh; "à", "á", "ơi" còn là '
+        "tiểu từ nên filler % có thể bị đếm dư. Lặp từ = token trùng token liền trước.",
+        "- Mục 4 cộng trên mọi variant; interrupt = host có uttr_type=interrupt.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def stage5_manifest_extras(work_root):
@@ -330,6 +636,7 @@ def collect(args):
         b["slots"] = slots
         total = slots["slots"]
         numbers["SLOTS"] = fmt_int(total)
+        numbers["SLOT_POST_FT_IGNORED"] = fmt_int(slots["post_ft_ignored"])
         for name, key in (("silence", "SILENCE"), ("backchannel", "BC"), ("floor_taking", "FT")):
             n = slots["decisions"].get(name, 0)
             numbers[f"SLOT_{key}"] = fmt_int(n)
@@ -359,6 +666,7 @@ def collect(args):
             n = sum(1 for d, _, _ in loaded["S4B"] if d == ds)
             if n:
                 numbers[f"DS_{ds}_N4B"] = fmt_int(n)
+        summary["duplexgen"] = {"text": duplexgen_stats(loaded["S4B"]), "tts": None}
     if "S1" in loaded and "S4B" in loaded:
         numbers["YIELD_PCT"] = fmt_num(pct(len(loaded["S4B"]), len(loaded["S1"])))
 
@@ -388,6 +696,8 @@ def collect(args):
                 per_ds[g["dataset"]] += g["totals"]["tts_units"]
             for ds, n in per_ds.items():
                 numbers[f"DS_{ds}_TTS"] = fmt_int(n)
+            if "duplexgen" in summary:
+                summary["duplexgen"]["tts"] = tts_by_scenario(s5)
         extra = stage5_manifest_extras(dirs["work"])
         summary["stage5_manifest_extras"] = extra
         numbers["TTS_FAILED"] = fmt_int(extra["failed_units"])
@@ -411,6 +721,10 @@ def collect(args):
         if variants:
             numbers["AUDIO_COVERAGE_PCT"] = fmt_num(pct(audio["files"], variants))
 
+    if "duplexgen" in summary:
+        dg = summary["duplexgen"]
+        numbers.update(duplexgen_numbers(dg["text"], dg["tts"]))
+
     summary["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     summary["errors"] = errors
     summary["definitions"] = {
@@ -433,6 +747,11 @@ def write_outputs(out, summary, numbers):
     lines = ["# Số liệu cho báo cáo", "", "| Mã | Giá trị |", "|---|---|"]
     lines += [f"| `[[{k}]]` | {str(v).replace('|', '/')} |" for k, v in sorted(numbers.items())]
     (out / "report_numbers.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if "duplexgen" in summary:
+        dg = summary["duplexgen"]
+        (out / "duplexgen_tables.md").write_text(
+            duplexgen_markdown(dg["text"], dg["tts"]), encoding="utf-8"
+        )
 
 
 def main(argv=None):

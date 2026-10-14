@@ -127,7 +127,7 @@ HESITATIONS = {
     "ú",
 }
 # Heuristics for boundary detection
-STOP_PUNCTUATION = r"[.,?!;]+$"
+STOP_PUNCTUATION = r"[.?!]+$"
 
 CONFIG = {
     "length_guard_start": 0,
@@ -536,7 +536,9 @@ def insert_action_tokens_from_llm_annotations(
                 decision = "floor_taking"
                 inserted = TOKEN_FT
                 floor_taking_triggered = True
-            elif i < length_guard_start:
+            elif floor_taking_triggered or i < length_guard_start:
+                # Text after [TAKE_FLOOR] is cut at render time, so no action can
+                # be realized there.
                 decision = "silence"
             else:
                 sampled = _sample_action(probs, rng)
@@ -559,16 +561,9 @@ def insert_action_tokens_from_llm_annotations(
             boundary_ptr += 1
 
     out = normalize_ws(" ".join(out_words))
-    # Post-processing cleanup
-    if TOKEN_FT in out:
-        # Keep any [BACKCHANNEL] tokens that occur before [TAKE_FLOOR].
-        # Only strip [BACKCHANNEL] from text that follows the first FT.
-        parts = out.split(TOKEN_FT)
-        before_ft = normalize_ws(parts[0])
-        after_parts = [normalize_ws(p.replace(TOKEN_BC, "")) for p in parts[1:]]
-        after_ft = (" " + TOKEN_FT + " ").join(after_parts)
-        out = normalize_ws(before_ft + " " + TOKEN_FT + ((" " + after_ft) if after_ft else ""))
-    else:
+    # Post-processing cleanup: with a [TAKE_FLOOR], keep the [BACKCHANNEL] tokens
+    # before it (none are sampled after it).
+    if TOKEN_FT not in out:
         out = normalize_ws(out.replace(TOKEN_BC, ""))
 
     return out, action_history
